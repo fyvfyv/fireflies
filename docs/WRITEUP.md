@@ -15,11 +15,19 @@ Engineering take-home: a simplified Fireflies.ai clone. Setup, architecture and 
   `whisper-large-v3-turbo`, chosen by `STT_PROVIDER`. The transcript keeps segment timestamps,
   language and measured duration.
 - **Summarize** with `anthropic/claude-haiku-4.5` through AI Gateway (`google/gemini-2.5-flash` as
-  the gateway fallback): title, overview, key takeaways, decisions, and action items with owner and
-  due date. Structured output is validated against a shared zod schema, with one repair retry.
-- **UI:** a meeting list (status, duration, overview snippet, action-item count), and a meeting page
-  with a live status stepper, summary, timestamped transcript, a failure banner with Retry or
-  Delete and re-upload, and delete with inline confirmation.
+  the gateway fallback): title, overview, keywords, topic notes (sections, bold key points,
+  sub-points), decisions, and action items with owner and due date. The model sees the transcript
+  as `[Ns] text` lines, so every section, point and action item gets a moment, which the server
+  snaps to a real segment start. Structured output is validated against a shared zod schema, with
+  one repair retry.
+- **UI:** a home page with a recorder (live waveform, large clock), sample and upload paths, a
+  page-wide drop zone and a searchable meeting list grouped by day. The meeting page, modeled on
+  the Fireflies meeting view, has rich topic notes with timestamp marks, a copy button that puts
+  rich text and Markdown on the clipboard, action items grouped by owner, a searchable transcript
+  rail that follows playback, and a sticky player whose scrubber is a "topic tape" of the meeting.
+  It also has a live status stepper while processing, a failure banner with Retry or Delete and
+  re-upload, and delete with confirmation. Light and dark themes, reduced motion, and layouts down
+  to 360 px are supported.
 - **Backend:** a Hono API on one Vercel Function, one Postgres table (Neon, drizzle), a private
   Vercel Blob store, and a synchronous, idempotent, resumable processing endpoint.
 - **Quality:** TypeScript strict on both sides, Biome, 40+ Vitest files (client and server
@@ -155,6 +163,38 @@ Recorded against `<LIVE_URL>` on `<date>`, deployment from commit `<sha>`.
 | 15 | Function logs show step durations and no secrets | |
 | 16 | Function settings show `maxDuration` 300 | |
 
+## Redesign pass
+
+After the MVP worked end to end, a second pass turned the plain UI into something closer to the
+Fireflies meeting view, with its own visual identity.
+
+- **Direction.** The design is "a listening log with a highlighter": notes read like a clean
+  document, and every claim carries a timestamp styled as a highlighter mark. The one bold element
+  is the topic tape in the player. Everything else is quiet: one typeface (Mona Sans, with its
+  width axis used for display type), hairlines instead of cards, and motion only where it answers
+  an action. The binding spec is [specs/2026-09-17-redesign.md](specs/2026-09-17-redesign.md).
+- **Backend.** Summary schema v2 (`keywords`, `notes`, `startSecond` everywhere) stays compatible
+  with stored summaries through zod defaults. It adds timestamped prompts with moment snapping, a
+  signed audio URL endpoint (`issueSignedToken` + `presignUrl`, checked for Range support and CORS
+  before building the player), and a notes-regeneration endpoint for older meetings.
+- **Process.** The spec split the work into four units with disjoint file ownership: backend,
+  design foundation, meeting page and home page. Each unit was built test-first by an agent in its
+  own git worktree, then reviewed by a second agent and fixed by a third, and the orchestrator
+  merged the units. A four-lens critique of real screenshots (visual, interaction, accessibility,
+  Fireflies parity and copy) produced a 24-task polish plan, built the same way.
+- **Findings from looking at the real thing.**
+  - Mona Sans's tabular figures are a monospace design with a slashed zero, so clocks and
+    timestamps read like code. The fix is proportional digits, with fixed-width digit cells only
+    for ticking clocks.
+  - A static topic tape under the title duplicated the player's tape, so it was removed.
+  - Section times now read as quiet ranges next to headings instead of detached marks.
+  - The notes gained a now-playing cue.
+- **Verification.** `pnpm verify` is green: 1,115 tests, lint and both typechecks. I checked it in a
+  browser against the real sample meeting at 1440 px and 390 px, in both themes, and in the
+  processing, recording and search states. Playback from timestamps worked with the audio muted,
+  because the automation browser had no working audio output. Two apparent 15-minute test hangs
+  were the Mac going to sleep mid-run, confirmed in `pmset` logs.
+
 ## Time spent
 
 Implementation ran in a supervised ralphex loop: one plan task per iteration, each ending in a
@@ -186,6 +226,7 @@ Human-supervised time, including work that leaves no commit (fill in before subm
 | Supervising the loop and reviewing each task's diff | `<fill in>` |
 | ralphex review phase and fixes | `<fill in>` |
 | Deploy, production smoke, seeding | `<fill in>` |
+| Redesign pass (agent wall clock 00:10–06:50 BST on 2026-09-17, including periods when the Mac slept) | `<fill in>` |
 | **Total** | `<fill in>` |
 
 ## AI tooling used
@@ -213,13 +254,14 @@ Human-supervised time, including work that leaves no commit (fill in before subm
 2. **Background processing**: move the pipeline to a durable workflow or queue (Vercel Workflow or
    Queues) so recordings over one function run and chunked audio over 25 MiB become possible, and
    the browser no longer has to trigger processing.
-3. **Auth and workspaces**: per-user meetings, sharing links, and access checks on blobs, with
-   audio playback through signed reads.
+3. **Auth and workspaces**: per-user meetings, sharing links, and an access check before a signed
+   audio URL is issued (today anyone with the meeting link can get one).
 4. **Abuse and cost controls**: a Vercel Firewall rate-limit rule on `/api/*`, cleanup of orphan
    blobs (uploaded but never created), and per-workspace spend caps.
 5. **Streaming UX**: stream the summary as it is generated, and live captions while recording.
 6. **Robustness gaps from the audit**: a fetch timeout in the API client, retryable handling for
    a connection that drops mid-body, an atomic check-and-insert for the rate limit, a purge of
    soft-deleted rows, and `drizzleRepo` tests in CI against a Neon branch.
-7. **Product**: title editing, search across transcripts and action items, export to
-   Markdown/Slack, and playback with click-to-seek from the transcript.
+7. **Product**: title editing, search across meetings' transcripts and action items, export to
+   Slack, action-item state stored on the server, "Ask about this meeting" (an LLM over the
+   transcript with cited timestamps), and shareable links to a moment (`?t=`).

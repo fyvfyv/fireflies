@@ -1,10 +1,15 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import type { Summary } from "../../shared/schemas.js";
+import type { StoredSummary } from "../../shared/schemas.js";
 import { createDb, type Db } from "../db/client.js";
 import { meetings } from "../db/schema.js";
 import { drizzleRepo } from "./drizzleRepo.js";
 import { memoryRepo } from "./memoryRepo.js";
-import { LIST_LIMIT, type MeetingRepo, type NewMeeting } from "./types.js";
+import {
+  LIST_LIMIT,
+  type MeetingPatch,
+  type MeetingRepo,
+  type NewMeeting,
+} from "./types.js";
 
 type RepoFactory = {
   make: (now: () => Date) => MeetingRepo;
@@ -26,7 +31,8 @@ const input = (overrides: Partial<NewMeeting> = {}): NewMeeting => ({
   ...overrides,
 });
 
-const summary: Summary = {
+// Shaped like rows stored before notes existed, which the repo must still accept.
+const summary: StoredSummary = {
   title: "Standup",
   overview: "x".repeat(200),
   keyTakeaways: ["a"],
@@ -199,6 +205,16 @@ function describeMeetingRepo(name: string, factory: RepoFactory) {
       expect(await repo.releaseLease(row.id, T0, {})).toBeNull();
     });
 
+    it("never reopens a deleted meeting", async () => {
+      const row = await repo.create(input());
+      await repo.update(row.id, { status: "done", summary });
+      await repo.delete(row.id);
+
+      expect(
+        await repo.reopenLegacySummary(row.id, T0, LEASE_MS, { title: "x" }),
+      ).toBeNull();
+    });
+
     it("still counts a deleted meeting as created", async () => {
       const row = await repo.create(input({ createdIpHash: "ip-a" }));
       await repo.delete(row.id);
@@ -290,6 +306,108 @@ function describeMeetingRepo(name: string, factory: RepoFactory) {
             "00000000-0000-0000-0000-000000000000",
             T0,
             LEASE_MS,
+          ),
+        ).toBeNull();
+      });
+    });
+
+    describe("reopenLegacySummary", () => {
+      const reopen = { status: "transcribed", summary: null } as const;
+      const seedDone = async (patch: MeetingPatch = {}) => {
+        const row = await repo.create(input());
+        await repo.update(row.id, { status: "done", summary, ...patch });
+        return row.id;
+      };
+
+      it("applies the patch to a done meeting whose summary lacks notes", async () => {
+        const id = await seedDone();
+        tick(1_000);
+
+        const reopened = await repo.reopenLegacySummary(
+          id,
+          clock,
+          LEASE_MS,
+          reopen,
+        );
+
+        expect(reopened).toMatchObject({
+          id,
+          status: "transcribed",
+          summary: null,
+          processingStartedAt: null,
+          updatedAt: clock,
+        });
+        expect(await repo.get(id)).toEqual(reopened);
+      });
+
+      it("accepts an empty notes list", async () => {
+        const id = await seedDone({
+          summary: { ...summary, keywords: [], notes: [] },
+        });
+
+        expect(
+          await repo.reopenLegacySummary(id, T0, LEASE_MS, reopen),
+        ).toMatchObject({ status: "transcribed" });
+      });
+
+      it.each<[string, MeetingPatch]>([
+        ["a meeting that is not done", { status: "transcribed" }],
+        [
+          "a summary with notes",
+          {
+            summary: {
+              ...summary,
+              notes: [
+                { heading: "h", gist: "g", startSecond: null, points: [] },
+              ],
+            },
+          },
+        ],
+      ])("refuses %s", async (_, patch) => {
+        const id = await seedDone(patch);
+        const before = await repo.get(id);
+
+        expect(
+          await repo.reopenLegacySummary(id, T0, LEASE_MS, reopen),
+        ).toBeNull();
+        expect(await repo.get(id)).toEqual(before);
+      });
+
+      it("refuses while a lease is fresh and not once it expired", async () => {
+        const id = await seedDone({ processingStartedAt: T0 });
+        const expiry = new Date(T0.getTime() + LEASE_MS);
+
+        expect(
+          await repo.reopenLegacySummary(id, expiry, LEASE_MS, reopen),
+        ).toBeNull();
+        expect(
+          await repo.reopenLegacySummary(
+            id,
+            new Date(expiry.getTime() + 1),
+            LEASE_MS,
+            reopen,
+          ),
+        ).toMatchObject({ status: "transcribed" });
+      });
+
+      it("lets exactly one of two concurrent reopens win", async () => {
+        const id = await seedDone();
+
+        const results = await Promise.all([
+          repo.reopenLegacySummary(id, T0, LEASE_MS, reopen),
+          repo.reopenLegacySummary(id, T0, LEASE_MS, reopen),
+        ]);
+
+        expect(results.filter(Boolean)).toHaveLength(1);
+      });
+
+      it("refuses an unknown id", async () => {
+        expect(
+          await repo.reopenLegacySummary(
+            "00000000-0000-0000-0000-000000000000",
+            T0,
+            LEASE_MS,
+            reopen,
           ),
         ).toBeNull();
       });

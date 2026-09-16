@@ -31,6 +31,8 @@ export type Recorder = {
   elapsed: number;
   warning: boolean;
   result: RecordingResult | null;
+  /** The microphone stream while recording, for the live waveform. */
+  stream: MediaStream | null;
   start: () => Promise<void>;
   stop: () => void;
   reset: () => void;
@@ -71,6 +73,7 @@ export function useRecorder(deps: RecorderDeps = browserDeps): Recorder {
   );
   const [elapsed, setElapsed] = useState(0);
   const [result, setResult] = useState<RecordingResult | null>(null);
+  const [stream, setStream] = useState<MediaStream | null>(null);
   const sessionRef = useRef<Session | null>(null);
   const startingRef = useRef(false);
   const mountedRef = useRef(false);
@@ -146,6 +149,7 @@ export function useRecorder(deps: RecorderDeps = browserDeps): Recorder {
       if (sessionRef.current !== session) return;
       const durationSeconds = (Date.now() - session.startedAt) / 1000;
       endSession();
+      setStream(null);
       setResult({
         blob: new Blob(session.chunks, { type: contentType }),
         contentType,
@@ -169,6 +173,7 @@ export function useRecorder(deps: RecorderDeps = browserDeps): Recorder {
       if (ms >= MAX_RECORDING_MS) stop();
     }, 1000);
     sessionRef.current = session;
+    setStream(stream);
     setResult(null);
     setElapsed(0);
     setState("recording");
@@ -176,6 +181,7 @@ export function useRecorder(deps: RecorderDeps = browserDeps): Recorder {
 
   const reset = useCallback(() => {
     endSession();
+    setStream(null);
     setResult(null);
     setElapsed(0);
     setState("idle");
@@ -202,6 +208,8 @@ export function useRecorder(deps: RecorderDeps = browserDeps): Recorder {
     elapsed,
     warning: state === "recording" && elapsed * 1000 >= RECORDING_WARN_MS,
     result,
+    // Only a live session's tracks are worth analysing; a stopped stream is dead.
+    stream: state === "recording" ? stream : null,
     start,
     stop,
     reset,

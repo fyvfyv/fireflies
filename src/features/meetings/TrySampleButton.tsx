@@ -1,11 +1,13 @@
 import { tw } from "@tw";
-import { useEffect, useId, useRef, useState } from "react";
+import { Play } from "lucide-react";
+import { type MouseEvent, useEffect, useId, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import type { SubmitInput } from "./useSubmitRecording";
 
 type TrySampleButtonProps = {
   onSubmit: (input: SubmitInput) => void;
   disabled?: boolean;
+  className?: string;
 };
 
 const SAMPLE_URL = "/samples/standup.webm";
@@ -24,6 +26,7 @@ async function fetchSample(signal: AbortSignal): Promise<Blob> {
 export function TrySampleButton({
   onSubmit,
   disabled = false,
+  className,
 }: TrySampleButtonProps) {
   const errorId = useId();
   const [loading, setLoading] = useState(false);
@@ -33,7 +36,10 @@ export function TrySampleButton({
   // that would navigate away from the recording.
   useEffect(() => () => controllerRef.current?.abort(), []);
 
-  const handleClick = async () => {
+  const handleClick = async (event: MouseEvent<HTMLButtonElement>) => {
+    // The button can appear under the pointer between the two clicks of a
+    // double click on the recorder (Discard). Keyboard activation reports 0.
+    if (event.detail > 1) return;
     const controller = new AbortController();
     controllerRef.current = controller;
     setLoading(true);
@@ -60,20 +66,23 @@ export function TrySampleButton({
   };
 
   return (
-    <div className={tw("space-y-1")}>
+    <div className={tw("flex flex-col gap-1.5")}>
       <Button
         variant="secondary"
         onClick={handleClick}
-        disabled={disabled || loading}
+        disabled={disabled}
+        busy={loading}
         aria-describedby={error ? errorId : undefined}
+        className={className}
       >
-        {loading ? "Loading sample…" : "Try a sample"}
+        {!loading && <Play aria-hidden="true" />}
+        {loading ? "Loading sample…" : "Try a 2-minute sample"}
       </Button>
       {error && (
         <p
           id={errorId}
           role="alert"
-          className={tw("max-w-xs text-caption text-red-700")}
+          className={tw("max-w-xs text-pretty type-caption text-danger")}
         >
           {error}
         </p>

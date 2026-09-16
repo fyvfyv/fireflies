@@ -1,20 +1,24 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { LEASE_MS } from "../../shared/constants.js";
 import {
+  audioUrlSchema,
   meetingListItemSchema,
   meetingSchema,
-  type Summary,
+  type StoredSummary,
 } from "../../shared/schemas.js";
 import { createApp } from "../app.js";
 import type { AppDeps } from "../deps.js";
+import type { MeetingPatch } from "../repo/types.js";
+import { finalizeSummary } from "../services/summaryOutput.js";
 import { SummaryError } from "../services/types.js";
 import { memoryStorage } from "../storage/memoryStorage.js";
 import { postJson, validCreateBody } from "../test/requests.js";
-import { testDeps } from "../test/testDeps.js";
+import { stubSummary, stubTranscript, testDeps } from "../test/testDeps.js";
 
 const T0 = new Date("2026-09-16T12:00:00.000Z");
 
-const summary: Summary = {
+// Stored before notes existed: no keywords, notes or action item moments.
+const summary: StoredSummary = {
   title: "Standup",
   overview: "o".repeat(200),
   keyTakeaways: ["a"],
@@ -35,7 +39,7 @@ describe("meetings routes", () => {
 
   beforeEach(() => {
     clock = T0;
-    const storage = memoryStorage();
+    const storage = memoryStorage(() => clock);
     storage.put(validCreateBody.audioPathname, {
       bytes: new Uint8Array([1, 2, 3]),
       contentType: validCreateBody.contentType,
@@ -199,6 +203,38 @@ describe("meetings routes", () => {
       expect(meetingSchema.parse(body)).toEqual(meeting);
     });
 
+    it("fills the fields a summary stored before notes existed lacks", async () => {
+      const meeting = await create();
+      await deps.repo.update(meeting.id, { status: "done", summary });
+
+      const res = await app.request(`/api/meetings/${meeting.id}`);
+
+      // Raw body, because parsing would apply the same defaults.
+      const body = (await res.json()) as { summary: unknown };
+      expect(body.summary).toEqual({
+        ...summary,
+        keywords: [],
+        notes: [],
+        actionItems: [
+          { task: "one", owner: null, due: null, startSecond: null },
+          { task: "two", owner: "Ana", due: "Friday", startSecond: null },
+        ],
+      });
+    });
+
+    it("returns a v2 summary unchanged", async () => {
+      const meeting = await create();
+      await deps.repo.update(meeting.id, {
+        status: "done",
+        summary: stubSummary,
+      });
+
+      const res = await app.request(`/api/meetings/${meeting.id}`);
+
+      const body = (await res.json()) as { summary: unknown };
+      expect(body.summary).toEqual(stubSummary);
+    });
+
     it("returns a not_found envelope for an unknown id", async () => {
       const res = await app.request("/api/meetings/nope");
 
@@ -317,6 +353,271 @@ describe("meetings routes", () => {
       expect(res.status).toBe(409);
       expect(await res.json()).toMatchObject({
         error: { code: "already_processing" },
+      });
+    });
+  });
+
+  describe("GET /meetings/:id/audio", () => {
+    const audioRequest = (id: string) =>
+      app.request(`/api/meetings/${id}/audio`);
+
+    it("returns a short-lived url that caches never keep", async () => {
+      const meeting = await create();
+
+      const res = await audioRequest(meeting.id);
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get("cache-control")).toBe("private, no-store");
+      expect(audioUrlSchema.parse(await res.json())).toEqual({
+        url: "https://memory.test/recordings/a.webm",
+        expiresAt: "2026-09-16T13:00:00.000Z",
+      });
+    });
+
+    it("returns a not_found envelope for an unknown meeting", async () => {
+      const res = await audioRequest("nope");
+
+      expect(res.status).toBe(404);
+      expect(await res.json()).toMatchObject({
+        error: { code: "not_found", retryable: false },
+      });
+    });
+
+    it("passes on the storage error when the audio is gone", async () => {
+      const meeting = await create({ audioPathname: "recordings/gone.webm" });
+
+      const res = await audioRequest(meeting.id);
+
+      expect(res.status).toBe(404);
+      expect(await res.json()).toMatchObject({
+        error: { code: "audio_missing", retryable: false },
+      });
+    });
+
+    it("does not hand out urls for deleted meetings", async () => {
+      const meeting = await create();
+      await deps.repo.delete(meeting.id);
+
+      const res = await audioRequest(meeting.id);
+
+      expect(res.status).toBe(404);
+      expect(await res.json()).toMatchObject({ error: { code: "not_found" } });
+    });
+  });
+
+  describe("POST /meetings/:id/notes", () => {
+    const notesRequest = (id: string) =>
+      app.request(`/api/meetings/${id}/notes`, { method: "POST" });
+
+    // A meeting summarized before notes existed.
+    const seedLegacy = async (patch: MeetingPatch = {}) => {
+      const meeting = await create();
+      await deps.repo.update(meeting.id, {
+        status: "done",
+        title: "Standup",
+        transcriptText: stubTranscript.text,
+        transcriptSegments: stubTranscript.segments,
+        summary,
+        ...patch,
+      });
+      return meeting.id;
+    };
+
+    const expectNotesCurrent = async (res: Response) => {
+      expect(res.status).toBe(422);
+      expect(await res.json()).toEqual({
+        error: {
+          code: "notes_current",
+          message: "These notes are already up to date.",
+          retryable: false,
+        },
+      });
+    };
+
+    it("rewrites a legacy summary with notes and returns the done meeting", async () => {
+      const id = await seedLegacy();
+
+      const res = await notesRequest(id);
+
+      expect(res.status).toBe(200);
+      const meeting = meetingSchema.parse(await res.json());
+      expect(meeting).toMatchObject({
+        id,
+        status: "done",
+        summary: stubSummary,
+        title: "Release planning",
+        errorStep: null,
+        processingStartedAt: null,
+        stalled: false,
+      });
+      expect(deps.summarize).toHaveBeenCalledExactlyOnceWith({
+        text: stubTranscript.text,
+        segments: stubTranscript.segments,
+      });
+      expect(deps.stt.transcribe).not.toHaveBeenCalled();
+      expect((await deps.repo.get(id))?.summary).toEqual(stubSummary);
+    });
+
+    it("regenerates a legacy summary whose notes list is empty", async () => {
+      const id = await seedLegacy({
+        summary: { ...summary, keywords: [], notes: [] },
+      });
+
+      const res = await notesRequest(id);
+
+      expect(res.status).toBe(200);
+      expect(deps.summarize).toHaveBeenCalledOnce();
+    });
+
+    it("gives the rewrite a fresh set of attempts", async () => {
+      const id = await seedLegacy({ attempts: 5 });
+
+      const res = await notesRequest(id);
+
+      expect(res.status).toBe(200);
+      expect(meetingSchema.parse(await res.json()).status).toBe("done");
+    });
+
+    it("lands a failed rewrite in the summarize retry flow", async () => {
+      vi.mocked(deps.summarize).mockRejectedValueOnce(
+        new SummaryError("Summary failed", true),
+      );
+      const id = await seedLegacy();
+
+      const res = await notesRequest(id);
+
+      expect(res.status).toBe(200);
+      expect(meetingSchema.parse(await res.json())).toMatchObject({
+        status: "failed",
+        errorStep: "summarize",
+        errorRetryable: true,
+        summary: null,
+        transcriptText: stubTranscript.text,
+      });
+
+      const retry = await app.request(`/api/meetings/${id}/process`, {
+        method: "POST",
+      });
+      expect(meetingSchema.parse(await retry.json())).toMatchObject({
+        status: "done",
+        summary: stubSummary,
+      });
+    });
+
+    it("returns a not_found envelope for an unknown id", async () => {
+      const res = await notesRequest("nope");
+
+      expect(res.status).toBe(404);
+      expect(await res.json()).toMatchObject({
+        error: { code: "not_found", retryable: false },
+      });
+    });
+
+    it.each<[string, MeetingPatch]>([
+      ["a meeting that is not done", { status: "uploaded", summary: null }],
+      ["a failed meeting", { status: "failed", summary: null }],
+      [
+        "a transcript with too few words",
+        {
+          transcriptText: "one two three four",
+          summary: { ...summary, title: "Empty recording" },
+        },
+      ],
+      ["a missing transcript", { transcriptText: null }],
+      ["a summary that already has notes", { summary: stubSummary }],
+    ])("refuses %s with notes_current", async (_, patch) => {
+      const id = await seedLegacy(patch);
+      const before = await deps.repo.get(id);
+
+      await expectNotesCurrent(await notesRequest(id));
+      expect(deps.summarize).not.toHaveBeenCalled();
+      expect(await deps.repo.get(id)).toEqual(before);
+    });
+
+    it("keeps notes current after a rewrite whose answer had no sections", async () => {
+      vi.mocked(deps.summarize).mockImplementationOnce(
+        async ({ segments }) => ({
+          summary: finalizeSummary({ ...stubSummary, notes: [] }, segments),
+          model: "stub:llm",
+          truncated: false,
+        }),
+      );
+      const id = await seedLegacy();
+
+      const first = await notesRequest(id);
+      expect(first.status).toBe(200);
+      expect(meetingSchema.parse(await first.json()).summary?.notes).toEqual([
+        expect.objectContaining({ heading: "Release planning" }),
+      ]);
+
+      await expectNotesCurrent(await notesRequest(id));
+      expect(deps.summarize).toHaveBeenCalledOnce();
+    });
+
+    // Between the reset and the pipeline taking its lease, the row is
+    // `transcribed` with no lease.
+    it("refuses with 409 while a rewrite is about to start", async () => {
+      const id = await seedLegacy({
+        status: "transcribed",
+        summary: null,
+        processingStartedAt: null,
+      });
+      const before = await deps.repo.get(id);
+
+      const res = await notesRequest(id);
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({
+        error: { code: "already_processing" },
+      });
+      expect(deps.summarize).not.toHaveBeenCalled();
+      expect(await deps.repo.get(id)).toEqual(before);
+    });
+
+    it("leaves notes alone that were saved after the call read the meeting", async () => {
+      const id = await seedLegacy();
+      const stale = await deps.repo.get(id);
+      await deps.repo.update(id, { summary: stubSummary });
+      vi.spyOn(deps.repo, "get").mockResolvedValueOnce(stale);
+
+      const res = await notesRequest(id);
+
+      expect(res.status).toBe(409);
+      expect(deps.summarize).not.toHaveBeenCalled();
+      expect(await deps.repo.get(id)).toMatchObject({
+        status: "done",
+        summary: stubSummary,
+      });
+    });
+
+    it("refuses with 409 while a rewrite holds the lease", async () => {
+      const id = await seedLegacy();
+      await deps.repo.update(id, { status: "summarizing", summary: null });
+      await deps.repo.claimLease(id, clock, LEASE_MS);
+      tick(LEASE_MS - 1);
+      const before = await deps.repo.get(id);
+
+      const res = await notesRequest(id);
+
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({
+        error: { code: "already_processing", retryable: false },
+      });
+      expect(deps.summarize).not.toHaveBeenCalled();
+      expect(await deps.repo.get(id)).toEqual(before);
+    });
+
+    it("answers a concurrent second call with 409", async () => {
+      const id = await seedLegacy();
+
+      const responses = await Promise.all([notesRequest(id), notesRequest(id)]);
+
+      expect(responses.map((res) => res.status).sort()).toEqual([200, 409]);
+      expect(deps.summarize).toHaveBeenCalledOnce();
+      expect(await deps.repo.get(id)).toMatchObject({
+        status: "done",
+        summary: stubSummary,
+        processingStartedAt: null,
       });
     });
   });

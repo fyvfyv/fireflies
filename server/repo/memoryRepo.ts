@@ -17,6 +17,11 @@ export function memoryRepo(now: () => Date = () => new Date()): MeetingRepo {
     return row && row.deletedAt === null ? row : undefined;
   };
 
+  const leaseHeld = (row: MeetingRow, at: Date, leaseMs: number) => {
+    const lease = row.processingStartedAt;
+    return lease !== null && lease.getTime() >= at.getTime() - leaseMs;
+  };
+
   const patchRow = (id: string, patch: MeetingPatch, lease?: Date) => {
     const row = liveRow(id);
     if (!row) return null;
@@ -108,12 +113,19 @@ export function memoryRepo(now: () => Date = () => new Date()): MeetingRepo {
 
     async claimLease(id, at, leaseMs) {
       const row = liveRow(id);
-      if (!row || row.status === "done") return null;
-      const lease = row.processingStartedAt;
-      if (lease && lease.getTime() >= at.getTime() - leaseMs) return null;
+      if (!row || row.status === "done" || leaseHeld(row, at, leaseMs)) {
+        return null;
+      }
       const claimed = { ...row, processingStartedAt: at, updatedAt: at };
       rows.set(id, claimed);
       return structuredClone(claimed);
+    },
+
+    async reopenLegacySummary(id, at, leaseMs, patch) {
+      const row = liveRow(id);
+      if (row?.status !== "done" || row.summary?.notes?.length) return null;
+      if (leaseHeld(row, at, leaseMs)) return null;
+      return patchRow(id, patch);
     },
 
     async releaseLease(id, lease, patch) {

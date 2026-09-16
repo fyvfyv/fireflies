@@ -1,6 +1,6 @@
 import { MAX_ATTEMPTS } from "@shared/constants";
 import type { Meeting } from "@shared/schemas";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -33,6 +33,29 @@ function renderBanner(props: Partial<ComponentProps<typeof FailedBanner>>) {
 }
 
 describe("FailedBanner", () => {
+  it("is a labelled region", () => {
+    renderBanner({});
+
+    expect(
+      screen.getByRole("region", { name: "Couldn't transcribe the recording" }),
+    ).toBeVisible();
+  });
+
+  it("shows why a delete failed", async () => {
+    const { user } = renderBanner({
+      meeting: failed({ errorRetryable: false }),
+      deleteError: "Database unavailable",
+    });
+
+    await user.click(
+      screen.getByRole("button", { name: "Delete and re-upload" }),
+    );
+
+    expect(
+      within(screen.getByRole("dialog")).getByRole("alert"),
+    ).toHaveTextContent("Database unavailable");
+  });
+
   it("explains a failed transcription and offers a retry", async () => {
     const { onRetry, user } = renderBanner({});
 
@@ -51,7 +74,7 @@ describe("FailedBanner", () => {
   it("tells the user a summary retry keeps the transcript", () => {
     renderBanner({ meeting: failed({ errorStep: "summarize" }) });
 
-    expect(screen.getByText("Couldn't write the summary")).toBeVisible();
+    expect(screen.getByText("Couldn't write the notes")).toBeVisible();
     expect(screen.getByText(/transcript is saved/i)).toBeVisible();
   });
 
@@ -79,7 +102,11 @@ describe("FailedBanner", () => {
     await user.click(
       screen.getByRole("button", { name: "Delete and re-upload" }),
     );
-    await user.click(screen.getByRole("button", { name: "Confirm delete" }));
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "Delete",
+      }),
+    );
 
     expect(onDelete).toHaveBeenCalledTimes(1);
   });
@@ -96,10 +123,16 @@ describe("FailedBanner", () => {
     ).toBeVisible();
   });
 
-  it("locks the retry while it runs and shows its error", () => {
-    renderBanner({ retrying: true, retryError: "Can't reach the server." });
+  it("locks the retry while it runs and shows its error", async () => {
+    const { onRetry, user } = renderBanner({
+      retrying: true,
+      retryError: "Can't reach the server.",
+    });
 
-    expect(screen.getByRole("button", { name: "Retrying…" })).toBeDisabled();
+    const button = screen.getByRole("button", { name: "Retrying…" });
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    await user.click(button);
+    expect(onRetry).not.toHaveBeenCalled();
     expect(screen.getByRole("alert")).toHaveTextContent(
       "Can't reach the server.",
     );

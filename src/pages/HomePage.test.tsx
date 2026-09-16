@@ -1,5 +1,6 @@
-import type { MeetingStatus } from "@shared/schemas";
-import { act, screen } from "@testing-library/react";
+import { MAX_AUDIO_BYTES } from "@shared/constants";
+import type { Meeting, MeetingListItem, MeetingStatus } from "@shared/schemas";
+import { act, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -48,12 +49,32 @@ describe("HomePage", () => {
     expect(mockedList).toHaveBeenCalledTimes(1);
   });
 
-  it("shows the empty state", async () => {
+  it("leads with the hero and the recorder", async () => {
     mockedList.mockResolvedValue([]);
 
     renderWithRouter(<HomePage />);
 
+    expect(
+      screen.getByRole("heading", { level: 1, name: /Record the meeting/ }),
+    ).toBeVisible();
+    expect(screen.getByRole("region", { name: "Recorder" })).toBeVisible();
     expect(await screen.findByText("No meetings yet")).toBeInTheDocument();
+  });
+
+  it("shows skeleton rows until the list loads", async () => {
+    let resolve: (value: MeetingListItem[]) => void = () => {};
+    mockedList.mockReturnValue(
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
+
+    renderWithRouter(<HomePage />);
+
+    expect(screen.getByText("Loading meetings…")).toBeInTheDocument();
+    await act(async () => resolve([meetingListItemFixture()]));
+    expect(screen.queryByText("Loading meetings…")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Weekly sync" })).toBeVisible();
   });
 
   describe("polling", () => {
@@ -208,7 +229,7 @@ describe("HomePage", () => {
         await screen.findByRole("button", { name: "Stop recording" }),
       );
       await user.click(
-        screen.getByRole("button", { name: "Save & transcribe" }),
+        screen.getByRole("button", { name: "Save and transcribe" }),
       );
       return user;
     }
@@ -242,6 +263,155 @@ describe("HomePage", () => {
       );
     });
 
+    it("offers the mic-free options in the empty state", async () => {
+      mockedList.mockResolvedValue([]);
+
+      renderWithRouter(<HomePage />);
+
+      const meetings = screen.getByRole("region", { name: "Meetings" });
+      expect(
+        await within(meetings).findByText("No meetings yet"),
+      ).toBeVisible();
+      expect(
+        within(meetings).getByRole("button", { name: "Try a 2-minute sample" }),
+      ).toBeVisible();
+    });
+
+    describe("dropping a file", () => {
+      const audio = new File(["x"], "call.m4a", { type: "audio/mp4" });
+      const drag = (file: File) => ({
+        dataTransfer: { types: ["Files"], files: [file], dropEffect: "none" },
+      });
+
+      it("uploads a dropped audio file and opens the new meeting", async () => {
+        renderWithRouter(<HomePage />);
+        await screen.findByRole("link", { name: "Weekly sync" });
+
+        fireEvent.dragEnter(document.body, drag(audio));
+        expect(
+          screen.getByText("Drop an audio file to transcribe it"),
+        ).toBeVisible();
+        fireEvent.drop(document.body, drag(audio));
+
+        expect(await screen.findByTestId("location")).toHaveTextContent(
+          "/m/m1",
+        );
+        expect(uploadAudio).toHaveBeenCalledWith(audio, "audio/mp4");
+        expect(createMeeting).toHaveBeenCalledWith(
+          expect.objectContaining({ source: "upload" }),
+        );
+      });
+
+      it("explains why a dropped file can't be used", async () => {
+        const user = userEvent.setup();
+        renderWithRouter(<HomePage />);
+        await screen.findByRole("link", { name: "Weekly sync" });
+
+        fireEvent.drop(
+          document.body,
+          drag(new File(["x"], "notes.txt", { type: "text/plain" })),
+        );
+
+        expect(await screen.findByRole("alert")).toHaveTextContent(
+          "Choose an audio file (WebM, M4A, MP3, WAV or OGG).",
+        );
+        expect(uploadAudio).not.toHaveBeenCalled();
+
+        // Starting a recording clears the message.
+        await user.click(
+          screen.getByRole("button", { name: "Start recording" }),
+        );
+        await screen.findByRole("button", { name: "Stop recording" });
+        expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      });
+
+      it("replaces a failed save with the dropped file's problem", async () => {
+        vi.mocked(uploadAudio).mockRejectedValueOnce(new Error("offline"));
+        const user = userEvent.setup();
+        renderWithRouter(<HomePage />);
+        await screen.findByRole("link", { name: "Weekly sync" });
+        await user.upload(screen.getByLabelText("Audio file"), audio);
+        expect(await screen.findByRole("alert")).toHaveTextContent(
+          /Couldn't upload/,
+        );
+
+        fireEvent.drop(
+          document.body,
+          drag(new File(["x"], "notes.txt", { type: "text/plain" })),
+        );
+
+        expect(screen.getByRole("alert")).toHaveTextContent(
+          "Choose an audio file (WebM, M4A, MP3, WAV or OGG).",
+        );
+        expect(
+          screen.queryByRole("button", { name: "Retry" }),
+        ).not.toBeInTheDocument();
+      });
+
+      it("drops an old drop message when a picked file is rejected", async () => {
+        // The picker's accept filter would drop the file before validation.
+        const user = userEvent.setup({ applyAccept: false });
+        renderWithRouter(<HomePage />);
+        await screen.findByRole("link", { name: "Weekly sync" });
+        fireEvent.drop(
+          document.body,
+          drag(new File(["x"], "notes.txt", { type: "text/plain" })),
+        );
+        expect(await screen.findByRole("alert")).toBeInTheDocument();
+
+        const big = new File(["x"], "big.mp3", { type: "audio/mpeg" });
+        Object.defineProperty(big, "size", { value: MAX_AUDIO_BYTES + 1 });
+        await user.upload(screen.getByLabelText("Audio file"), big);
+
+        expect(screen.getByRole("alert")).toHaveTextContent(/over 25 MB/);
+      });
+
+      it("ignores drops while a recording is in progress", async () => {
+        const user = userEvent.setup();
+        renderWithRouter(<HomePage />);
+        await user.click(
+          await screen.findByRole("button", { name: "Start recording" }),
+        );
+        await screen.findByRole("button", { name: "Stop recording" });
+
+        fireEvent.dragEnter(document.body, drag(audio));
+        fireEvent.drop(document.body, drag(audio));
+
+        expect(
+          screen.queryByText("Drop an audio file to transcribe it"),
+        ).not.toBeInTheDocument();
+        expect(uploadAudio).not.toHaveBeenCalled();
+      });
+
+      it("ignores drops while an unsaved recording waits", async () => {
+        const user = userEvent.setup();
+        renderWithRouter(<HomePage />);
+        await user.click(
+          await screen.findByRole("button", { name: "Start recording" }),
+        );
+        await user.click(
+          await screen.findByRole("button", { name: "Stop recording" }),
+        );
+
+        fireEvent.drop(document.body, drag(audio));
+
+        expect(uploadAudio).not.toHaveBeenCalled();
+        expect(screen.queryByTestId("location")).not.toBeInTheDocument();
+      });
+
+      it("ignores drops while a save is running", async () => {
+        vi.mocked(uploadAudio).mockReturnValue(new Promise(() => {}));
+        renderWithRouter(<HomePage />);
+        await screen.findByRole("link", { name: "Weekly sync" });
+        fireEvent.drop(document.body, drag(audio));
+        await screen.findByText("Uploading audio…");
+
+        fireEvent.drop(document.body, drag(audio));
+
+        expect(uploadAudio).toHaveBeenCalledTimes(1);
+      });
+    });
+
     it("hides the mic-free options while recording", async () => {
       const user = userEvent.setup();
       renderWithRouter(<HomePage />);
@@ -269,13 +439,35 @@ describe("HomePage", () => {
       expect(await screen.findByRole("status")).toHaveTextContent(
         "Uploading audio…",
       );
-      expect(screen.getByRole("button", { name: "Saving…" })).toBeDisabled();
+      expect(
+        screen.getByRole("button", { name: "Uploading audio…" }),
+      ).toHaveAttribute("aria-busy", "true");
+      expect(screen.getByRole("button", { name: "Discard" })).toBeDisabled();
+
+      let finishCreate: (value: Meeting) => void = () => {};
+      vi.mocked(createMeeting).mockReturnValue(
+        new Promise((resolve) => {
+          finishCreate = resolve;
+        }),
+      );
       await act(async () =>
         finishUpload({
           pathname: "recordings/u1.webm",
           sizeBytes: 1,
           contentType: "audio/webm",
         }),
+      );
+
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "Creating the meeting…",
+      );
+      expect(
+        screen.getByRole("button", { name: "Creating the meeting…" }),
+      ).toHaveAttribute("aria-busy", "true");
+      expect(screen.queryByTestId("location")).not.toBeInTheDocument();
+
+      await act(async () =>
+        finishCreate(meetingFixture({ id: "m1", status: "uploaded" })),
       );
       expect(await screen.findByTestId("location")).toHaveTextContent("/m/m1");
     });
@@ -291,7 +483,7 @@ describe("HomePage", () => {
       );
 
       expect(
-        await screen.findByRole("button", { name: "Save & transcribe" }),
+        await screen.findByRole("button", { name: "Save and transcribe" }),
       ).toBeVisible();
       expect(screen.queryByText("No microphone?")).not.toBeInTheDocument();
     });
@@ -332,7 +524,9 @@ describe("HomePage", () => {
       const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
 
       const user = await recordAndSave();
-      await screen.findByText("Uploading audio…");
+      expect(await screen.findByRole("status")).toHaveTextContent(
+        "Uploading audio…",
+      );
       await user.click(screen.getByRole("link", { name: /Weekly sync/ }));
 
       expect(confirm).toHaveBeenCalledTimes(1);
@@ -382,7 +576,7 @@ describe("HomePage", () => {
       const user = userEvent.setup();
       renderWithRouter(<HomePage />);
       await user.click(
-        await screen.findByRole("button", { name: "Try a sample" }),
+        await screen.findByRole("button", { name: "Try a 2-minute sample" }),
       );
 
       await user.click(screen.getByRole("button", { name: "Start recording" }));
@@ -461,7 +655,7 @@ describe("HomePage", () => {
     ).toBeInTheDocument();
     // Offered once, inside the recorder card.
     expect(
-      screen.getAllByRole("button", { name: "Try a sample" }),
+      screen.getAllByRole("button", { name: "Try a 2-minute sample" }),
     ).toHaveLength(1);
   });
 });

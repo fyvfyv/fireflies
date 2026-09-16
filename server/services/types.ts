@@ -1,4 +1,6 @@
-import type { Summary } from "../../shared/schemas.js";
+import type { Segment, Summary } from "../../shared/schemas.js";
+
+export type SummaryInput = { text: string; segments: Segment[] | null };
 
 export type SummaryResult = {
   summary: Summary;

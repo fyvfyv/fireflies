@@ -1,36 +1,82 @@
 import type { MeetingStatus } from "@shared/schemas";
 import { tw } from "@tw";
+import { CircleAlert, CircleCheck, CirclePause } from "lucide-react";
 
-const badges: Record<MeetingStatus, { label: string; tone: string }> = {
-  uploaded: { label: "Uploaded", tone: "bg-neutral-100 text-neutral-700" },
-  transcribing: { label: "Transcribing", tone: "bg-sky-100 text-sky-800" },
-  transcribed: { label: "Transcribed", tone: "bg-sky-100 text-sky-800" },
-  summarizing: { label: "Summarizing", tone: "bg-sky-100 text-sky-800" },
-  done: { label: "Done", tone: "bg-emerald-100 text-emerald-800" },
-  failed: { label: "Failed", tone: "bg-red-100 text-red-800" },
+// `transcribed` sits between the two steps of a run that is about to write
+// the notes; `uploaded` waits for someone to open the meeting. "Notes" is the
+// word the meeting page uses for the result.
+const progressLabels: Record<
+  Exclude<MeetingStatus, "done" | "failed">,
+  string
+> = {
+  uploaded: "Waiting",
+  transcribing: "Transcribing",
+  transcribed: "Writing notes",
+  summarizing: "Writing notes",
 };
 
-const interrupted = {
-  label: "Interrupted",
-  tone: "bg-amber-100 text-amber-800",
-};
+const base = "inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap";
 
-export function StatusBadge({
-  status,
-  stalled,
-}: {
+type StatusBadgeProps = {
   status: MeetingStatus;
   stalled: boolean;
-}) {
-  const { label, tone } = stalled ? interrupted : badges[status];
+  className?: string;
+};
+
+export function StatusBadge({ status, stalled, className }: StatusBadgeProps) {
+  if (stalled) {
+    return (
+      <span className={tw(base, "text-graphite", className)}>
+        <CirclePause aria-hidden="true" size={16} />
+        <span>Interrupted</span>
+      </span>
+    );
+  }
+  switch (status) {
+    case "done":
+      // Done is the normal case, so it stays quiet: a check, named for
+      // screen readers only.
+      return (
+        <span className={tw(base, className)}>
+          <CircleCheck aria-hidden="true" size={16} className={tw("text-ok")} />
+          <span className={tw("sr-only")}>Done</span>
+        </span>
+      );
+    case "failed":
+      return (
+        <span className={tw(base, "font-medium text-danger", className)}>
+          <CircleAlert aria-hidden="true" size={16} />
+          <span>Failed</span>
+        </span>
+      );
+    default:
+      return (
+        <span className={tw(base, "text-graphite", className)}>
+          <ProgressDots />
+          <span>{progressLabels[status]}</span>
+        </span>
+      );
+  }
+}
+
+const DOT_DELAYS = ["0ms", "160ms", "320ms"];
+
+function ProgressDots() {
   return (
     <span
-      className={tw(
-        "inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-caption font-medium",
-        tone,
-      )}
+      aria-hidden="true"
+      className={tw("inline-flex w-4 items-center justify-center gap-0.5")}
     >
-      {label}
+      {DOT_DELAYS.map((delay) => (
+        <span
+          key={delay}
+          data-slot="progress-dot"
+          // The rec-pulse token stops under reduced motion like every
+          // animate-* utility; the label still says what is happening.
+          className={tw("size-1 animate-rec-pulse rounded-full bg-current")}
+          style={{ animationDelay: delay }}
+        />
+      ))}
     </span>
   );
 }

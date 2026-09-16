@@ -27,9 +27,39 @@ export function meetingFixture(overrides: Partial<Meeting> = {}): Meeting {
     summary: {
       title: "Weekly sync",
       overview: "The team agreed to ship the release on Friday.",
+      keywords: ["release", "Friday"],
+      notes: [
+        {
+          heading: "Release timeline",
+          gist: "The team set the release date.",
+          startSecond: 0,
+          points: [
+            {
+              text: "The team will **ship on Friday**",
+              startSecond: 0,
+              details: ["QA signs off on Thursday"],
+            },
+          ],
+        },
+        {
+          heading: "Release tasks",
+          gist: "Ana takes the release work.",
+          startSecond: 70,
+          points: [
+            { text: "**Ana** tags the release", startSecond: 70, details: [] },
+          ],
+        },
+      ],
       keyTakeaways: ["Release is on track"],
       decisions: ["Ship on Friday"],
-      actionItems: [{ task: "Tag the release", owner: "Ana", due: "Friday" }],
+      actionItems: [
+        {
+          task: "Tag the release",
+          owner: "Ana",
+          due: "Friday",
+          startSecond: 70,
+        },
+      ],
     },
     errorStep: null,
     errorMessage: null,

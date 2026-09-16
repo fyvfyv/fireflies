@@ -272,6 +272,60 @@ describe("useRecorder", () => {
     expect(FakeMediaRecorder.latest).toBeUndefined();
   });
 
+  describe("stream", () => {
+    it("is null before recording", () => {
+      const { result } = setup();
+
+      expect(result.current.stream).toBeNull();
+    });
+
+    it("is the microphone stream while recording", async () => {
+      const { result, stream, start } = setup();
+
+      await start();
+
+      expect(result.current.stream).toBe(stream);
+    });
+
+    it("is null again once stopped", async () => {
+      const { result, start } = setup();
+      await start();
+
+      act(() => result.current.stop());
+
+      expect(result.current.stream).toBeNull();
+    });
+
+    it("is null after a reset while recording", async () => {
+      const { result, start } = setup();
+      await start();
+
+      act(() => result.current.reset());
+
+      expect(result.current.stream).toBeNull();
+    });
+
+    it("stays null when the recorder refuses to start", async () => {
+      vi.spyOn(FakeMediaRecorder.prototype, "start").mockImplementation(() => {
+        throw new DOMException("x", "InvalidModificationError");
+      });
+      const { result, start } = setup();
+
+      await start();
+
+      expect(result.current.stream).toBeNull();
+    });
+
+    it("is null again when the recording stops itself at the limit", async () => {
+      const { result, start, advance } = setup();
+      await start();
+
+      await advance(MAX_RECORDING_MS);
+
+      expect(result.current.stream).toBeNull();
+    });
+  });
+
   it("guards page unload while recording or unsaved", async () => {
     const { result, start } = setup();
     expect(beforeUnloadPrevented()).toBe(false);

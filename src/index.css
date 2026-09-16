@@ -1,10 +1,379 @@
 @import "tailwindcss";
 
+/*
+ * Color tokens. Raw values live on :root so dark mode only swaps variables;
+ * `@theme inline` below turns them into utilities (bg-paper, text-ink,
+ * border-rule, bg-marker, bg-topic-1…) that follow the swap.
+ */
+:root {
+  color-scheme: light dark;
+
+  --paper: #f4f5f7;
+  --sheet: #ffffff;
+  --sunken: #eceef2;
+  --ink: #171e2c;
+  --graphite: #5a6273;
+  --faint: #8a92a3;
+  --rule: #e1e4ea;
+  --marker: #e3f36b;
+  --marker-ink: #171e2c;
+  --rec: #e5484d;
+  --danger: #c7372f;
+  --ok: #2f8f5b;
+
+  --topic-1: #7b93f2;
+  --topic-2: #f0a35e;
+  --topic-3: #5dbfa7;
+  --topic-4: #e27ba3;
+  --topic-5: #a58bda;
+  --topic-6: #9bc46a;
+
+  --float-shadow:
+    0 1px 2px rgb(23 30 44 / 0.06), 0 8px 24px rgb(23 30 44 / 0.08);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #12161e;
+    --sheet: #1a1f29;
+    --sunken: #0e1218;
+    --ink: #e9ecf2;
+    --graphite: #9aa3b5;
+    --faint: #6c7588;
+    --rule: #2a303c;
+    --marker: #d6ea4e;
+    --marker-ink: #12161e;
+    --rec: #f2555a;
+    --danger: #f0716a;
+    --ok: #4fc285;
+
+    /* Same hues, HSL lightness +8%. */
+    --topic-1: #a0b1f6;
+    --topic-2: #f3b883;
+    --topic-3: #7acbb7;
+    --topic-4: #e99cba;
+    --topic-5: #bdaae4;
+    --topic-6: #afd087;
+
+    /* The light tint disappears on dark paper. */
+    --float-shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.4);
+  }
+}
+
+@theme inline {
+  --color-paper: var(--paper);
+  --color-sheet: var(--sheet);
+  --color-sunken: var(--sunken);
+  --color-ink: var(--ink);
+  --color-graphite: var(--graphite);
+  --color-faint: var(--faint);
+  --color-rule: var(--rule);
+  --color-marker: var(--marker);
+  --color-marker-ink: var(--marker-ink);
+  --color-rec: var(--rec);
+  --color-danger: var(--danger);
+  --color-ok: var(--ok);
+  --color-topic-1: var(--topic-1);
+  --color-topic-2: var(--topic-2);
+  --color-topic-3: var(--topic-3);
+  --color-topic-4: var(--topic-4);
+  --color-topic-5: var(--topic-5);
+  --color-topic-6: var(--topic-6);
+
+  --shadow-float: var(--float-shadow);
+}
+
 @theme {
+  --font-sans:
+    "Mona Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  /*
+   * Type scale. `text-*` sets size, line height, weight and tracking; the
+   * matching `type-*` utility below also sets the width axis, which Tailwind's
+   * font-size tokens cannot carry.
+   */
   --text-caption: 0.75rem;
   --text-caption--line-height: 1rem;
-  --text-body: 0.875rem;
-  --text-body--line-height: 1.25rem;
-  --text-title: 1.5rem;
-  --text-title--line-height: 2rem;
+  --text-caption--font-weight: 450;
+  --text-small: 0.8125rem;
+  --text-small--line-height: 1.125rem;
+  --text-small--font-weight: 450;
+  --text-body: 0.9375rem;
+  --text-body--line-height: 1.5rem;
+  --text-body--font-weight: 420;
+  --text-lead: 1.0625rem;
+  --text-lead--line-height: 1.625rem;
+  --text-lead--font-weight: 420;
+  --text-heading: 1.1875rem;
+  --text-heading--line-height: 1.625rem;
+  --text-heading--font-weight: 620;
+  --text-title: 1.875rem;
+  --text-title--line-height: 2.25rem;
+  --text-title--font-weight: 680;
+  --text-title--letter-spacing: -0.01em;
+  --text-display: 3.25rem;
+  --text-display--line-height: 3.375rem;
+  --text-display--font-weight: 720;
+  --text-display--letter-spacing: -0.02em;
+  --text-timer: 4rem;
+  --text-timer--line-height: 4rem;
+  --text-timer--font-weight: 300;
+
+  --radius-sheet: 1rem;
+  --radius-control: 0.625rem;
+  --radius-chip: 999px;
+  /* Timestamp marks are highlighter strokes, not pills. */
+  --radius-mark: 0.25rem;
+
+  --ease-out-soft: cubic-bezier(0.2, 0.7, 0.2, 1);
+
+  --animate-marker-sweep: marker-sweep 450ms var(--ease-out-soft);
+  /* Set --i on each section to stagger it (60ms steps, capped at 8). */
+  --animate-reveal: reveal 380ms var(--ease-out-soft)
+    calc(min(var(--i, 0), 8) * 60ms) both;
+  --animate-shimmer: shimmer 1.4s linear infinite;
+  --animate-rec-pulse: rec-pulse 1.2s ease-in-out infinite;
+  --animate-toast-in: toast-in 200ms var(--ease-out-soft);
+  --animate-toast-out: toast-out 200ms ease-in forwards;
+
+  @keyframes marker-sweep {
+    from {
+      background-size: 0% 100%;
+    }
+    to {
+      background-size: 100% 100%;
+    }
+  }
+
+  @keyframes reveal {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+  }
+
+  @keyframes shimmer {
+    from {
+      background-position: 150% 0;
+    }
+    to {
+      background-position: -50% 0;
+    }
+  }
+
+  @keyframes rec-pulse {
+    50% {
+      opacity: 0.45;
+      transform: scale(0.8);
+    }
+  }
+
+  @keyframes toast-in {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+  }
+
+  @keyframes toast-out {
+    to {
+      opacity: 0;
+    }
+  }
+}
+
+/*
+ * Composite type styles. Line height, weight and tracking read the same
+ * --tw-* variables as Tailwind's own utilities, so `type-title font-medium`
+ * or `type-display leading-none` still refine them.
+ */
+@utility type-caption {
+  font-size: var(--text-caption);
+  line-height: var(--tw-leading, var(--text-caption--line-height));
+  font-weight: var(--tw-font-weight, var(--text-caption--font-weight));
+  font-stretch: 100%;
+}
+
+@utility type-small {
+  font-size: var(--text-small);
+  line-height: var(--tw-leading, var(--text-small--line-height));
+  font-weight: var(--tw-font-weight, var(--text-small--font-weight));
+  font-stretch: 100%;
+}
+
+@utility type-body {
+  font-size: var(--text-body);
+  line-height: var(--tw-leading, var(--text-body--line-height));
+  font-weight: var(--tw-font-weight, var(--text-body--font-weight));
+  font-stretch: 100%;
+}
+
+@utility type-lead {
+  font-size: var(--text-lead);
+  line-height: var(--tw-leading, var(--text-lead--line-height));
+  font-weight: var(--tw-font-weight, var(--text-lead--font-weight));
+  font-stretch: 100%;
+}
+
+@utility type-heading {
+  font-size: var(--text-heading);
+  line-height: var(--tw-leading, var(--text-heading--line-height));
+  font-weight: var(--tw-font-weight, var(--text-heading--font-weight));
+  font-stretch: 106%;
+}
+
+@utility type-title {
+  font-size: var(--text-title);
+  line-height: var(--tw-leading, var(--text-title--line-height));
+  font-weight: var(--tw-font-weight, var(--text-title--font-weight));
+  letter-spacing: var(--tw-tracking, var(--text-title--letter-spacing));
+  font-stretch: 112%;
+}
+
+/* Display and timer sizes shrink on mobile through the tokens (below). */
+@utility type-display {
+  font-size: var(--text-display);
+  line-height: var(--tw-leading, var(--text-display--line-height));
+  font-weight: var(--tw-font-weight, var(--text-display--font-weight));
+  letter-spacing: var(--tw-tracking, var(--text-display--letter-spacing));
+  font-stretch: 118%;
+  text-wrap: balance;
+}
+
+@utility type-timer {
+  font-size: var(--text-timer);
+  line-height: var(--tw-leading, var(--text-timer--line-height));
+  font-weight: var(--tw-font-weight, var(--text-timer--font-weight));
+  font-stretch: 125%;
+}
+
+/*
+ * Mobile display and timer sizes. Overriding the tokens, not the utilities,
+ * keeps `text-display` and `text-timer` in step with the `type-*` styles.
+ * Unlayered, so it beats the @theme values.
+ */
+@media (width < 48rem) {
+  :root {
+    /* Scales with the viewport so "Record the meeting." stays on one line
+       down to 360px instead of orphaning "meeting.". */
+    --text-display: clamp(1.875rem, 8.6vw, 2.375rem);
+    --text-display--line-height: 1.1;
+    --text-timer: 3rem;
+    --text-timer--line-height: 3rem;
+  }
+}
+
+/*
+ * Highlighter stroke. Drawn as a background image rather than a background
+ * color so `animate-marker-sweep` (and --marker-fill changes) can grow it
+ * from the left; `clone` keeps the stroke on every line of wrapped text.
+ */
+@utility marker {
+  color: var(--marker-ink);
+  background-image: linear-gradient(var(--marker), var(--marker));
+  background-repeat: no-repeat;
+  background-position: left center;
+  background-size: var(--marker-fill, 100%) 100%;
+  border-radius: var(--radius-mark);
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  transition: background-size 450ms var(--ease-out-soft);
+}
+
+/* Skeleton surface; animate-shimmer moves the sheen across it. */
+@utility skeleton {
+  background-color: var(--sunken);
+  background-image: linear-gradient(
+    90deg,
+    transparent 30%,
+    color-mix(in oklab, var(--sheet) 55%, transparent) 50%,
+    transparent 70%
+  );
+  background-repeat: no-repeat;
+  background-size: 200% 100%;
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* Tailwind v4 borders default to currentColor; here a bare `border` is a
+     hairline. */
+  *,
+  ::before,
+  ::after,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--rule);
+  }
+
+  body {
+    @apply bg-paper text-ink font-sans antialiased;
+    font-size: var(--text-body);
+    line-height: var(--text-body--line-height);
+    font-weight: var(--text-body--font-weight);
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background-color: var(--marker);
+    color: var(--marker-ink);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ink);
+    outline-offset: 2px;
+  }
+
+  mark {
+    background-color: var(--marker);
+    color: var(--marker-ink);
+  }
+
+  /* The placeholder is the only visible label of the search fields and the
+     default recording title, so it needs text contrast; faint is ~3:1. */
+  ::placeholder {
+    color: var(--graphite);
+  }
+
+  /* Tailwind v4 resets buttons to the default cursor. */
+  button:not(:disabled, [aria-disabled="true"]),
+  [role="button"]:not([aria-disabled="true"]) {
+    cursor: pointer;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--rule) transparent;
+  }
+}
+
+/*
+ * Reduced motion: decorative animations and transitions stop. Spinners keep
+ * turning because they are the only sign that something is still working.
+ * Every animate-* utility reads its --animate-* token, so emptying the tokens
+ * also stops variant forms such as md:animate-reveal. Unlayered, so these
+ * rules beat the theme and utilities without !important.
+ */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --animate-marker-sweep: none;
+    --animate-reveal: none;
+    --animate-shimmer: none;
+    --animate-rec-pulse: none;
+    --animate-toast-in: none;
+    --animate-toast-out: none;
+    --animate-pulse: none;
+    --animate-ping: none;
+    --animate-bounce: none;
+  }
+
+  *,
+  ::before,
+  ::after {
+    transition-duration: 0s;
+    scroll-behavior: auto;
+  }
 }

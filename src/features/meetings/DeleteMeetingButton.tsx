@@ -1,65 +1,94 @@
 import { tw } from "@tw";
-import { useId, useRef, useState } from "react";
-import { Button } from "@/components/ui/Button";
+import { Trash2 } from "lucide-react";
+import { type ComponentProps, useId } from "react";
+import { Button, type ButtonVariant } from "@/components/ui/Button";
+import {
+  Popover,
+  PopoverClose,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/Popover";
 
-type DeleteMeetingButtonProps = {
+type ConfirmProps = {
   onConfirm: () => void;
-  label?: string;
   deleting?: boolean;
+  /** Why the last attempt failed; the panel stays open to show it. */
+  error?: string | null;
 };
 
-export function DeleteMeetingButton({
-  onConfirm,
-  label = "Delete",
-  deleting = false,
-}: DeleteMeetingButtonProps) {
-  const questionId = useId();
-  const [confirming, setConfirming] = useState(false);
-  // The clicked button unmounts on toggle; without this, focus falls back to
-  // the page body.
-  const moveFocus = useRef(false);
-  const focusWhenToggled = (element: HTMLButtonElement | null) => {
-    if (!element || !moveFocus.current) return;
-    moveFocus.current = false;
-    element.focus();
-  };
-  const toggle = (next: boolean) => {
-    moveFocus.current = true;
-    setConfirming(next);
-  };
+type DeleteMeetingButtonProps = ConfirmProps & {
+  label?: string;
+  variant?: ButtonVariant;
+};
 
-  if (!confirming) {
-    return (
-      <Button
-        ref={focusWhenToggled}
-        variant="secondary"
-        onClick={() => toggle(true)}
-      >
-        {label}
-      </Button>
-    );
-  }
+/** A button that asks in a small popover before deleting the meeting. */
+export function DeleteMeetingButton({
+  label = "Delete meeting",
+  variant = "secondary",
+  ...confirm
+}: DeleteMeetingButtonProps) {
   return (
-    // biome-ignore lint/a11y/useSemanticElements: a fieldset's legend can't sit inline with the buttons
-    <div
-      role="group"
-      aria-labelledby={questionId}
-      className={tw("flex flex-wrap items-center gap-2")}
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button variant={variant}>
+          <Trash2 aria-hidden="true" />
+          {label}
+        </Button>
+      </PopoverTrigger>
+      <DeleteConfirmContent align="start" {...confirm} />
+    </Popover>
+  );
+}
+
+type ContentProps = ConfirmProps &
+  Omit<ComponentProps<typeof PopoverContent>, "children" | "onError">;
+
+/**
+ * The confirmation panel, for any Popover. The meeting page opens it from its
+ * overflow menu, so it isn't tied to a trigger button.
+ */
+export function DeleteConfirmContent({
+  onConfirm,
+  deleting = false,
+  error = null,
+  className,
+  ...props
+}: ContentProps) {
+  const titleId = useId();
+  const descriptionId = useId();
+  return (
+    <PopoverContent
+      aria-labelledby={titleId}
+      aria-describedby={descriptionId}
+      className={tw("space-y-3", className)}
+      // Deleting can't be interrupted; keep the panel until it finishes.
+      onEscapeKeyDown={(event) => deleting && event.preventDefault()}
+      onPointerDownOutside={(event) => deleting && event.preventDefault()}
+      {...props}
     >
-      <span id={questionId} className={tw("text-body text-neutral-700")}>
-        Delete the meeting and its recording?
-      </span>
-      <Button variant="danger" onClick={onConfirm} disabled={deleting}>
-        {deleting ? "Deleting…" : "Confirm delete"}
-      </Button>
-      <Button
-        ref={focusWhenToggled}
-        variant="secondary"
-        onClick={() => toggle(false)}
-        disabled={deleting}
-      >
-        Cancel
-      </Button>
-    </div>
+      <div className={tw("space-y-0.5")}>
+        <p id={titleId} className={tw("type-body font-semibold text-ink")}>
+          Delete this meeting?
+        </p>
+        <p id={descriptionId} className={tw("type-small text-graphite")}>
+          This can't be undone.
+        </p>
+      </div>
+      {error && (
+        <p role="alert" className={tw("type-small text-danger")}>
+          {error}
+        </p>
+      )}
+      <div className={tw("flex justify-end gap-2")}>
+        <PopoverClose asChild>
+          <Button variant="secondary" size="sm" disabled={deleting}>
+            Cancel
+          </Button>
+        </PopoverClose>
+        <Button variant="danger" size="sm" busy={deleting} onClick={onConfirm}>
+          Delete
+        </Button>
+      </div>
+    </PopoverContent>
   );
 }

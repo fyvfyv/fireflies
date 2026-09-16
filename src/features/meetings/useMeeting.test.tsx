@@ -2,7 +2,7 @@ import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, getMeeting } from "@/lib/api";
 import { meetingFixture } from "@/test/fixtures";
-import { useMeeting } from "./useMeeting";
+import { keepUnchanged, useMeeting } from "./useMeeting";
 
 vi.mock("@/lib/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/api")>()),
@@ -202,6 +202,29 @@ describe("useMeeting", () => {
     expect(mockedGet).toHaveBeenCalledTimes(3);
   });
 
+  it("keeps unchanged parts of a refetched meeting", async () => {
+    mockedGet.mockResolvedValue(transcribing);
+    const { result } = await setup();
+    const first = result.current.meeting;
+
+    // Polls parse a fresh object every time, even when nothing changed.
+    mockedGet.mockResolvedValue(structuredClone(transcribing));
+    await advance(2_000);
+    expect(result.current.meeting).toBe(first);
+
+    mockedGet.mockResolvedValue(
+      meetingFixture({
+        ...structuredClone(transcribing),
+        status: "summarizing",
+      }),
+    );
+    await advance(2_000);
+    const next = result.current.meeting;
+    expect(next).not.toBe(first);
+    expect(next?.status).toBe("summarizing");
+    expect(next?.transcriptSegments).toBe(first?.transcriptSegments);
+  });
+
   it("stops polling on unmount", async () => {
     mockedGet.mockResolvedValue(transcribing);
     const { unmount } = await setup();
@@ -247,5 +270,41 @@ describe("useMeeting", () => {
     await act(async () => finishFirst(meetingFixture({ id: "abc" })));
 
     expect(result.current.meeting?.id).toBe("xyz");
+  });
+});
+
+describe("keepUnchanged", () => {
+  it("returns the previous value when both are deeply equal", () => {
+    const prev = { a: 1, list: [{ b: "x" }, { b: "y" }], none: null };
+    expect(keepUnchanged(prev, structuredClone(prev))).toBe(prev);
+  });
+
+  it("reuses the equal parts of a changed value", () => {
+    const prev = { a: 1, list: [{ b: "x" }, { b: "y" }], nested: { c: [1] } };
+    const next = structuredClone(prev);
+    next.list[1] = { b: "z" };
+
+    const result = keepUnchanged(prev, next);
+
+    expect(result).toEqual(next);
+    expect(result).not.toBe(prev);
+    expect(result.nested).toBe(prev.nested);
+    expect(result.list).not.toBe(prev.list);
+    expect(result.list[0]).toBe(prev.list[0]);
+    expect(result.list[1]).not.toBe(prev.list[1]);
+  });
+
+  it.each([
+    ["an added key", { a: 1 }, { a: 1, b: undefined }],
+    ["a removed key", { a: 1, b: 2 }, { a: 1 }],
+    ["a longer list", [1, 2], [1, 2, undefined]],
+    ["a shorter list", [1, 2], [1]],
+    ["a list replacing an object", { 0: 1 }, [1]],
+    ["null replacing an object", { a: 1 }, null],
+  ])("treats %s as a change", (_, prev, next) => {
+    const result = keepUnchanged<unknown>(prev, next);
+
+    expect(result).not.toBe(prev);
+    expect(result).toStrictEqual(next);
   });
 });

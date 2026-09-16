@@ -13,7 +13,7 @@ export const app = createApp({
   repo: drizzleRepo(getDb),
   storage: blobStorage(),
   stt: createSttProvider(env),
-  summarize: (text) => summarizeTranscript(text, llm),
+  summarize: (input) => summarizeTranscript(input, llm),
   now: () => new Date(),
   log: (line) => console.log(JSON.stringify(line)),
   limits: { perIpPerHour: 10, globalPerHour: 30 },

@@ -32,28 +32,64 @@ const segmentSchema = z.object({
 });
 export type Segment = z.infer<typeof segmentSchema>;
 
-const actionItemSchema = z.object({
-  task: z.string(),
-  owner: z.string().nullable(),
-  due: z.string().nullable(),
-});
-export type ActionItem = z.infer<typeof actionItemSchema>;
-
 export const SUMMARY_LIMITS = {
   titleChars: 120,
   keyTakeaways: 10,
   decisions: 10,
   actionItems: 20,
+  keywords: 8,
+  sections: 8,
+  pointsPerSection: 6,
+  detailsPerPoint: 4,
 } as const;
+
+// Seconds from the start of the recording; null when the transcript had no timestamps.
+const momentSchema = z.number().nonnegative().nullable();
+
+const notePointSchema = z.object({
+  /** May contain `**bold**` spans of a few words; no other markdown. */
+  text: z.string(),
+  startSecond: momentSchema,
+  details: z.array(z.string()).max(SUMMARY_LIMITS.detailsPerPoint),
+});
+export type NotePoint = z.output<typeof notePointSchema>;
+
+const noteSectionSchema = z.object({
+  heading: z.string(),
+  /** One sentence. */
+  gist: z.string(),
+  startSecond: momentSchema,
+  points: z.array(notePointSchema).max(SUMMARY_LIMITS.pointsPerSection),
+});
+export type NoteSection = z.output<typeof noteSectionSchema>;
+
+// The defaults cover summaries stored before notes existed.
+const actionItemSchema = z.object({
+  task: z.string(),
+  owner: z.string().nullable(),
+  due: z.string().nullable(),
+  startSecond: momentSchema.default(null),
+});
+export type ActionItem = z.output<typeof actionItemSchema>;
 
 export const summarySchema = z.object({
   title: z.string().max(SUMMARY_LIMITS.titleChars),
   overview: z.string(),
+  keywords: z.array(z.string()).max(SUMMARY_LIMITS.keywords).default([]),
+  notes: z.array(noteSectionSchema).max(SUMMARY_LIMITS.sections).default([]),
   keyTakeaways: z.array(z.string()).max(SUMMARY_LIMITS.keyTakeaways),
   decisions: z.array(z.string()).max(SUMMARY_LIMITS.decisions),
   actionItems: z.array(actionItemSchema).max(SUMMARY_LIMITS.actionItems),
 });
-export type Summary = z.infer<typeof summarySchema>;
+export type Summary = z.output<typeof summarySchema>;
+/** What a database row may hold: rows written before notes existed lack the defaulted fields. */
+export type StoredSummary = z.input<typeof summarySchema>;
+
+export const audioUrlSchema = z.object({
+  url: z.url(),
+  expiresAt: z.iso.datetime(),
+});
+export type AudioUrl = z.infer<typeof audioUrlSchema>;
 
 const timestamp = z.iso.datetime();
 const MAX_DURATION_SECONDS = 24 * 60 * 60;

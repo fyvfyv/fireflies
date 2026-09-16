@@ -33,21 +33,31 @@ export function drizzleRepo(
   getDb: () => Db,
   now: () => Date = () => new Date(),
 ): MeetingRepo {
-  const patchRow = async (id: string, patch: MeetingPatch, lease?: Date) => {
+  const patchWhere = async (
+    id: string,
+    patch: MeetingPatch,
+    ...conditions: (SQL | undefined)[]
+  ) => {
     const [row] = await getDb()
       .update(meetings)
       .set({ ...patch, updatedAt: now() })
-      .where(
-        live(
-          id,
-          lease === undefined
-            ? undefined
-            : eq(meetings.processingStartedAt, lease),
-        ),
-      )
+      .where(live(id, ...conditions))
       .returning();
     return row ?? null;
   };
+
+  const patchRow = (id: string, patch: MeetingPatch, lease?: Date) =>
+    patchWhere(
+      id,
+      patch,
+      lease === undefined ? undefined : eq(meetings.processingStartedAt, lease),
+    );
+
+  const noLiveLease = (at: Date, leaseMs: number) =>
+    or(
+      isNull(meetings.processingStartedAt),
+      lt(meetings.processingStartedAt, new Date(at.getTime() - leaseMs)),
+    );
 
   return {
     async create(meeting) {
@@ -129,21 +139,21 @@ export function drizzleRepo(
       const [row] = await getDb()
         .update(meetings)
         .set({ processingStartedAt: at, updatedAt: at })
-        .where(
-          live(
-            id,
-            ne(meetings.status, "done"),
-            or(
-              isNull(meetings.processingStartedAt),
-              lt(
-                meetings.processingStartedAt,
-                new Date(at.getTime() - leaseMs),
-              ),
-            ),
-          ),
-        )
+        .where(live(id, ne(meetings.status, "done"), noLiveLease(at, leaseMs)))
         .returning();
       return row ?? null;
+    },
+
+    // A missing `notes` key and an empty list both mean "no notes"; comparing
+    // with '[]' also can't fail on a non-array the way jsonb_array_length would.
+    async reopenLegacySummary(id, at, leaseMs, patch) {
+      return patchWhere(
+        id,
+        patch,
+        eq(meetings.status, "done"),
+        noLiveLease(at, leaseMs),
+        sql`coalesce(${meetings.summary}->'notes', '[]'::jsonb) = '[]'::jsonb`,
+      );
     },
 
     async releaseLease(id, lease, patch) {

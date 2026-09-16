@@ -7,3 +7,4 @@ dist
 docs/memos/
 coverage
 *.local
+.env*.local

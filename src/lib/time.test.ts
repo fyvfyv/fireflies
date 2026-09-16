@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   formatDateTime,
+  formatDayTime,
   formatDuration,
   formatRelative,
+  formatShortTime,
   formatTimestamp,
 } from "./time";
 
@@ -60,6 +62,39 @@ describe("formatDateTime", () => {
   it("shows the local date and time", () => {
     expect(formatDateTime(new Date(2026, 8, 16, 14, 5))).toMatch(
       /^Sep 16, 2026, 2:05\sPM$/,
+    );
+  });
+});
+
+describe("formatShortTime", () => {
+  it.each([
+    [0, "0:00"],
+    [34.9, "0:34"],
+    [70, "1:10"],
+    [105.62, "1:45"],
+    [599, "9:59"],
+    [600, "10:00"],
+    [3661, "1:01:01"],
+    [-3, "0:00"],
+    [Number.NaN, "0:00"],
+    [Number.POSITIVE_INFINITY, "0:00"],
+  ])("%s s → %s", (seconds, expected) => {
+    expect(formatShortTime(seconds)).toBe(expected);
+  });
+});
+
+describe("formatDayTime", () => {
+  const now = new Date(2026, 8, 17, 9, 0);
+
+  it("leaves out the year for dates in the current year", () => {
+    expect(formatDayTime(new Date(2026, 8, 17, 14, 31), now)).toMatch(
+      /^Sep 17, 2:31\sPM$/,
+    );
+  });
+
+  it("shows the year for older dates", () => {
+    expect(formatDayTime(new Date(2025, 11, 3, 9, 5), now)).toMatch(
+      /^Dec 3, 2025, 9:05\sAM$/,
     );
   });
 });

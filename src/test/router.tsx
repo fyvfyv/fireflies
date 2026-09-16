@@ -6,6 +6,7 @@ import {
   RouterProvider,
   useLocation,
 } from "react-router";
+import { AppProviders } from "@/components/AppProviders";
 
 function LocationProbe() {
   return <div data-testid="location">{useLocation().pathname}</div>;
@@ -13,7 +14,8 @@ function LocationProbe() {
 
 // Any navigation away from `path` lands on the probe, so tests assert the
 // destination via `findByTestId('location')`. A data router, like the app's,
-// so pages can use `useBlocker`.
+// so pages can use `useBlocker`. Wrapped in the app providers, so toasts and
+// tooltips render as they do under the layout.
 export function renderWithRouter(
   ui: ReactElement,
   { path = "/", route = "/" }: { path?: string; route?: string } = {},
@@ -25,16 +27,22 @@ export function renderWithRouter(
     ],
     { initialEntries: [route] },
   );
-  return render(<RouterProvider router={router} />);
+  return render(
+    <AppProviders>
+      <RouterProvider router={router} />
+    </AppProviders>,
+  );
 }
 
 export function routerWrapper(route = "/") {
   return function RouterWrapper({ children }: { children: ReactNode }) {
     return (
-      <MemoryRouter initialEntries={[route]}>
-        {children}
-        <LocationProbe />
-      </MemoryRouter>
+      <AppProviders>
+        <MemoryRouter initialEntries={[route]}>
+          {children}
+          <LocationProbe />
+        </MemoryRouter>
+      </AppProviders>
     );
   };
 }

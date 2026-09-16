@@ -75,6 +75,18 @@ export type MeetingRepo = {
     now: Date,
     leaseMs: number,
   ): Promise<MeetingRow | null>;
+  /**
+   * Applies `patch` only while the meeting is done, its summary has no notes
+   * and it holds no lease younger than `leaseMs`, all in one atomic write, so
+   * reopening a legacy summary can't race a run or clear notes saved since the
+   * caller read the row. Null otherwise.
+   */
+  reopenLegacySummary(
+    id: string,
+    now: Date,
+    leaseMs: number,
+    patch: MeetingPatch,
+  ): Promise<MeetingRow | null>;
   /** Null unless the meeting still holds `lease`. */
   releaseLease(
     id: string,

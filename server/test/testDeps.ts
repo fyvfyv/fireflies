@@ -19,12 +19,38 @@ export const stubTranscript: Transcript = {
   durationSeconds: 5.2,
 };
 
+// Moments sit on stubTranscript's segment starts, so post-processing keeps them.
 export const stubSummary: Summary = {
   title: "Release planning",
   overview: "The team agreed on the release date.",
+  keywords: ["release", "Ana"],
+  notes: [
+    {
+      heading: "Release date",
+      gist: "The team picked the release day.",
+      startSecond: 0,
+      points: [
+        {
+          text: "The release ships **on Friday**",
+          startSecond: 0,
+          details: ["The whole team agreed"],
+        },
+      ],
+    },
+    {
+      heading: "Meeting notes",
+      gist: "Ana takes over the notes.",
+      startSecond: 3.5,
+      points: [
+        { text: "**Ana** owns the notes", startSecond: 3.5, details: [] },
+      ],
+    },
+  ],
   keyTakeaways: ["Release is on Friday"],
   decisions: ["Ship on Friday"],
-  actionItems: [{ task: "Write the notes", owner: "Ana", due: null }],
+  actionItems: [
+    { task: "Write the notes", owner: "Ana", due: null, startSecond: 3.5 },
+  ],
 };
 
 export function testDeps(overrides: Partial<AppDeps> = {}): AppDeps {

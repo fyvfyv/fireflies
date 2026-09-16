@@ -85,7 +85,10 @@ describe("processMeeting", () => {
         bytes: new Uint8Array([1, 2, 3]),
         contentType: "audio/webm",
       });
-      expect(summarize()).toHaveBeenCalledWith(stubTranscript.text);
+      expect(summarize()).toHaveBeenCalledWith({
+        text: stubTranscript.text,
+        segments: stubTranscript.segments,
+      });
       expect(row).toMatchObject({
         status: "done",
         title: stubSummary.title,
@@ -174,8 +177,22 @@ describe("processMeeting", () => {
       const row = await processMeeting(deps, id);
 
       expect(transcribe()).not.toHaveBeenCalled();
-      expect(summarize()).toHaveBeenCalledOnce();
+      expect(summarize()).toHaveBeenCalledExactlyOnceWith({
+        text: stubTranscript.text,
+        segments: stubTranscript.segments,
+      });
       expect(row.status).toBe("done");
+    });
+
+    it("summarizes a stored transcript without segments as plain text", async () => {
+      const id = await seed({ ...transcribed, transcriptSegments: null });
+
+      await processMeeting(deps, id);
+
+      expect(summarize()).toHaveBeenCalledExactlyOnceWith({
+        text: stubTranscript.text,
+        segments: null,
+      });
     });
 
     it("retries only the summary after a failed summarize", async () => {
@@ -220,6 +237,8 @@ describe("processMeeting", () => {
           title: "Empty recording",
           summary: {
             title: "Empty recording",
+            keywords: [],
+            notes: [],
             keyTakeaways: [],
             decisions: [],
             actionItems: [],
@@ -235,7 +254,7 @@ describe("processMeeting", () => {
 
       await processMeeting(deps, id);
 
-      expect(summarize()).toHaveBeenCalledWith(text);
+      expect(summarize()).toHaveBeenCalledWith({ text, segments: [] });
     });
   });
 

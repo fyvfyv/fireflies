@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { TrySampleButton } from "./TrySampleButton";
@@ -10,7 +10,7 @@ function setup(props: { disabled?: boolean } = {}) {
   const user = userEvent.setup();
   render(<TrySampleButton onSubmit={onSubmit} {...props} />);
   const click = () =>
-    user.click(screen.getByRole("button", { name: "Try a sample" }));
+    user.click(screen.getByRole("button", { name: "Try a 2-minute sample" }));
   return { onSubmit, click };
 }
 
@@ -64,7 +64,9 @@ describe("TrySampleButton", () => {
       /couldn't load the sample/i,
     );
     expect(onSubmit).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: "Try a sample" })).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "Try a 2-minute sample" }),
+    ).toBeEnabled();
   });
 
   it("treats an HTML fallback page as a missing sample", async () => {
@@ -97,18 +99,51 @@ describe("TrySampleButton", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
-  it("is disabled while the sample loads", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(() => new Promise(() => {})),
-    );
+  it("shows it is loading and ignores more clicks", async () => {
+    const fetchMock = vi.fn(() => new Promise(() => {}));
+    vi.stubGlobal("fetch", fetchMock);
     const { click } = setup();
+    const user = userEvent.setup();
 
     await click();
+    const button = screen.getByRole("button", { name: "Loading sample…" });
+    await user.click(button);
 
+    expect(button).toHaveAttribute("aria-busy", "true");
+    // Busy rather than disabled, so keyboard focus stays on the button.
+    expect(button).toHaveFocus();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores the second click of a double click that lands on it", () => {
+    // The button can appear under the pointer after a double click on the
+    // recorder's Discard button.
+    const fetchMock = vi.fn(() => new Promise(() => {}));
+    vi.stubGlobal("fetch", fetchMock);
+    const onSubmit = vi.fn();
+    render(<TrySampleButton onSubmit={onSubmit} />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Try a 2-minute sample" }),
+      { detail: 2 },
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
     expect(
-      screen.getByRole("button", { name: "Loading sample…" }),
-    ).toBeDisabled();
+      screen.getByRole("button", { name: "Try a 2-minute sample" }),
+    ).not.toHaveAttribute("aria-busy");
+  });
+
+  it("still loads the sample from the keyboard", async () => {
+    const fetchMock = vi.fn(() => new Promise(() => {}));
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<TrySampleButton onSubmit={vi.fn()} />);
+
+    await user.tab();
+    await user.keyboard("{Enter}");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("drops the sample when unmounted while it loads", async () => {
@@ -123,7 +158,9 @@ describe("TrySampleButton", () => {
     const onSubmit = vi.fn();
     const user = userEvent.setup();
     const { unmount } = render(<TrySampleButton onSubmit={onSubmit} />);
-    await user.click(screen.getByRole("button", { name: "Try a sample" }));
+    await user.click(
+      screen.getByRole("button", { name: "Try a 2-minute sample" }),
+    );
 
     unmount();
     await act(async () =>
@@ -137,6 +174,8 @@ describe("TrySampleButton", () => {
   it("can be disabled", () => {
     setup({ disabled: true });
 
-    expect(screen.getByRole("button", { name: "Try a sample" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Try a 2-minute sample" }),
+    ).toBeDisabled();
   });
 });

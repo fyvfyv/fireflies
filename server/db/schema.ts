@@ -14,7 +14,7 @@ import {
   MEETING_STATUSES,
   type Segment,
   SOURCES,
-  type Summary,
+  type StoredSummary,
 } from "../../shared/schemas.js";
 
 export const meetingStatusEnum = pgEnum("meeting_status", MEETING_STATUSES);
@@ -42,7 +42,8 @@ export const meetings = pgTable(
       .notNull()
       .default(false),
     sttProvider: text("stt_provider"),
-    summary: jsonb("summary").$type<Summary>(),
+    // Rows written before notes existed lack the fields summarySchema defaults.
+    summary: jsonb("summary").$type<StoredSummary>(),
     errorStep: errorStepEnum("error_step"),
     errorMessage: text("error_message"),
     errorRetryable: boolean("error_retryable"),

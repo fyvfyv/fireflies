@@ -4,13 +4,17 @@ import {
   MAX_AUDIO_BYTES,
 } from "@shared/constants";
 import { tw } from "@tw";
+import { Upload } from "lucide-react";
 import { type ChangeEvent, useId, useRef, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import type { SubmitInput } from "./useSubmitRecording";
 
 type UploadAudioButtonProps = {
   onSubmit: (input: SubmitInput) => void;
+  /** Called with the message this button shows for a file it rejects. */
+  onReject?: (message: string) => void;
   disabled?: boolean;
+  className?: string;
 };
 
 // Browsers and OSes disagree on audio types: .webm files (including
@@ -43,20 +47,34 @@ function audioType(file: File): string {
   return TYPE_ALIASES[type] ?? type;
 }
 
-function validate(file: File): string | null {
-  if (!isAllowedAudioType(audioType(file))) {
-    return "Choose an audio file (WebM, M4A, MP3, WAV or OGG).";
+export type AudioFileCheck =
+  | { ok: true; contentType: string }
+  | { ok: false; error: string };
+
+/** Shared by the file picker and the page-wide drop zone. */
+export function validateAudioFile(file: File): AudioFileCheck {
+  const contentType = audioType(file);
+  if (!isAllowedAudioType(contentType)) {
+    return {
+      ok: false,
+      error: "Choose an audio file (WebM, M4A, MP3, WAV or OGG).",
+    };
   }
   if (file.size > MAX_AUDIO_BYTES) {
-    return `This file is over ${MAX_MB} MB. Choose a shorter recording.`;
+    return {
+      ok: false,
+      error: `This file is over ${MAX_MB} MB. Choose a shorter recording.`,
+    };
   }
-  if (file.size === 0) return "This file is empty.";
-  return null;
+  if (file.size === 0) return { ok: false, error: "This file is empty." };
+  return { ok: true, contentType };
 }
 
 export function UploadAudioButton({
   onSubmit,
+  onReject,
   disabled = false,
+  className,
 }: UploadAudioButtonProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const errorId = useId();
@@ -67,25 +85,31 @@ export function UploadAudioButton({
     // Cleared so picking the same file again still fires a change event.
     event.target.value = "";
     if (!file) return;
-    const problem = validate(file);
-    setError(problem);
-    if (problem) return;
-    onSubmit({
-      blob: file,
-      contentType: audioType(file),
-      source: "upload",
-    });
+    const check = validateAudioFile(file);
+    setError(check.ok ? null : check.error);
+    if (!check.ok) {
+      onReject?.(check.error);
+      return;
+    }
+    onSubmit({ blob: file, contentType: check.contentType, source: "upload" });
   };
 
   return (
-    <div className={tw("space-y-1")}>
+    <div className={tw("flex flex-col gap-1.5")}>
       <Button
         variant="secondary"
-        onClick={() => inputRef.current?.click()}
+        onClick={(event) => {
+          // The button can appear under the pointer between the two clicks
+          // of a double click on the recorder (Discard).
+          if (event.detail > 1) return;
+          inputRef.current?.click();
+        }}
         disabled={disabled}
         aria-describedby={error ? errorId : undefined}
+        className={className}
       >
-        Upload audio file
+        <Upload aria-hidden="true" />
+        Upload audio
       </Button>
       <input
         ref={inputRef}
@@ -100,7 +124,7 @@ export function UploadAudioButton({
         <p
           id={errorId}
           role="alert"
-          className={tw("max-w-xs text-caption text-red-700")}
+          className={tw("max-w-xs text-pretty type-caption text-danger")}
         >
           {error}
         </p>

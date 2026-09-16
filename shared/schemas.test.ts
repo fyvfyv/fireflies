@@ -2,15 +2,49 @@ import { describe, expect, it } from "vitest";
 import { MAX_AUDIO_BYTES } from "./constants.js";
 import {
   apiErrorSchema,
+  audioUrlSchema,
   createMeetingInputSchema,
   type Meeting,
   meetingListItemSchema,
   meetingSchema,
+  type NoteSection,
+  type StoredSummary,
   type Summary,
   summarySchema,
 } from "./schemas.js";
 
+const section: NoteSection = {
+  heading: "Release timeline",
+  gist: "The team set the release date.",
+  startSecond: 0,
+  points: [
+    {
+      text: "The team will **ship on Friday**",
+      startSecond: 0,
+      details: ["QA signs off on Thursday"],
+    },
+  ],
+};
+
 const summary: Summary = {
+  title: "Weekly standup",
+  overview: "The team synced on the release.",
+  keywords: ["release", "Ana"],
+  notes: [section],
+  keyTakeaways: ["Release is on track"],
+  decisions: ["Ship on Friday"],
+  actionItems: [
+    {
+      task: "Write release notes",
+      owner: "Ana",
+      due: "Friday",
+      startSecond: 0,
+    },
+  ],
+};
+
+// Stored before notes existed: no keywords, notes or action item moments.
+const legacySummary: StoredSummary = {
   title: "Weekly standup",
   overview: "The team synced on the release.",
   keyTakeaways: ["Release is on track"],
@@ -85,6 +119,96 @@ describe("summarySchema", () => {
 
     expect(parsed).not.toHaveProperty("sentiment");
   });
+
+  it("round-trips a summary with notes", () => {
+    expect(summarySchema.parse(summary)).toEqual(summary);
+  });
+
+  it("fills the fields a legacy summary lacks", () => {
+    const parsed = summarySchema.parse(legacySummary);
+
+    expect(parsed.keywords).toEqual([]);
+    expect(parsed.notes).toEqual([]);
+    expect(parsed.actionItems).toEqual([
+      {
+        task: "Write release notes",
+        owner: "Ana",
+        due: "Friday",
+        startSecond: null,
+      },
+    ]);
+  });
+
+  it("accepts moments that are null", () => {
+    const parsed = summarySchema.parse({
+      ...summary,
+      notes: [
+        {
+          ...section,
+          startSecond: null,
+          points: [{ text: "Point", startSecond: null, details: [] }],
+        },
+      ],
+      actionItems: [
+        { task: "Follow up", owner: null, due: null, startSecond: null },
+      ],
+    });
+
+    expect(parsed.notes[0]?.startSecond).toBeNull();
+    expect(parsed.notes[0]?.points[0]?.startSecond).toBeNull();
+    expect(parsed.actionItems[0]?.startSecond).toBeNull();
+  });
+
+  it("requires the moment on sections and points", () => {
+    const { startSecond: _, ...sectionWithoutMoment } = section;
+
+    expect(
+      summarySchema.safeParse({ ...summary, notes: [sectionWithoutMoment] })
+        .success,
+    ).toBe(false);
+  });
+
+  const many = <T>(n: number, item: T) => Array.from({ length: n }, () => item);
+  const point = { text: "Point", startSecond: 1, details: [] };
+
+  it.each([
+    ["a negative section moment", { notes: [{ ...section, startSecond: -1 }] }],
+    [
+      "a negative action item moment",
+      {
+        actionItems: [{ task: "t", owner: null, due: null, startSecond: -0.5 }],
+      },
+    ],
+    ["more than 8 keywords", { keywords: many(9, "k") }],
+    ["more than 8 sections", { notes: many(9, section) }],
+    [
+      "more than 6 points in a section",
+      { notes: [{ ...section, points: many(7, point) }] },
+    ],
+    [
+      "more than 4 details on a point",
+      {
+        notes: [{ ...section, points: [{ ...point, details: many(5, "d") }] }],
+      },
+    ],
+  ])("rejects %s", (_, override) => {
+    expect(summarySchema.safeParse({ ...summary, ...override }).success).toBe(
+      false,
+    );
+  });
+
+  it("accepts every list at its limit", () => {
+    const result = summarySchema.safeParse({
+      ...summary,
+      keywords: many(8, "k"),
+      notes: many(8, {
+        ...section,
+        points: many(6, { ...point, details: many(4, "d") }),
+      }),
+    });
+
+    expect(result.success).toBe(true);
+  });
 });
 
 describe("createMeetingInputSchema", () => {
@@ -151,6 +275,19 @@ describe("meetingSchema", () => {
     expect(meetingSchema.safeParse(rest).success).toBe(false);
   });
 
+  it("parses a meeting stored before notes existed, with defaults", () => {
+    const parsed = meetingSchema.parse({
+      ...doneMeeting,
+      summary: legacySummary,
+    });
+
+    expect(parsed.summary).toMatchObject({
+      keywords: [],
+      notes: [],
+      actionItems: [{ task: "Write release notes", startSecond: null }],
+    });
+  });
+
   it("strips unknown keys such as the creator ip hash", () => {
     const parsed = meetingSchema.parse({
       ...doneMeeting,
@@ -177,6 +314,26 @@ describe("meetingListItemSchema", () => {
     });
 
     expect(result.success).toBe(true);
+  });
+});
+
+describe("audioUrlSchema", () => {
+  const audio = {
+    url: "https://store.private.blob.vercel-storage.com/recordings/a.webm?sig=1",
+    expiresAt: "2026-09-16T13:00:00.000Z",
+  };
+
+  it("accepts a signed url with its expiry", () => {
+    expect(audioUrlSchema.parse(audio)).toEqual(audio);
+  });
+
+  it.each([
+    ["a relative url", { url: "/recordings/a.webm" }],
+    ["a non-ISO expiry", { expiresAt: "tomorrow" }],
+  ])("rejects %s", (_, override) => {
+    expect(audioUrlSchema.safeParse({ ...audio, ...override }).success).toBe(
+      false,
+    );
   });
 });
 

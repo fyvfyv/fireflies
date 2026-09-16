@@ -43,7 +43,14 @@ export function useMeeting(
     let apply: (prev: MeetingState) => MeetingState;
     try {
       const meeting = await getMeeting(id);
-      apply = () => ({ id, meeting, notFound: false, error: null });
+      apply = (prev) => ({
+        id,
+        // Polls mostly return what the page already shows; keeping those
+        // objects lets memoized views (the transcript) skip the update.
+        meeting: prev.meeting ? keepUnchanged(prev.meeting, meeting) : meeting,
+        notFound: false,
+        error: null,
+      });
     } catch (err) {
       apply =
         err instanceof ApiError && err.status === 404
@@ -81,4 +88,36 @@ export function useMeeting(
 
   const { meeting, notFound, error } = state;
   return { meeting, notFound, error, refetch };
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * Returns `next`, reusing every part of `prev` that is deeply equal to it
+ * (all of `prev` when nothing changed). Values are parsed JSON.
+ */
+export function keepUnchanged<T>(prev: T, next: T): T {
+  if (Object.is(prev, next)) return prev;
+  if (Array.isArray(prev) && Array.isArray(next)) {
+    let same = prev.length === next.length;
+    const merged = next.map((item, index) => {
+      const kept = keepUnchanged(prev[index], item);
+      if (kept !== prev[index]) same = false;
+      return kept;
+    });
+    return (same ? prev : merged) as T;
+  }
+  if (isRecord(prev) && isRecord(next)) {
+    const keys = Object.keys(next);
+    let same = keys.length === Object.keys(prev).length;
+    const merged: Record<string, unknown> = {};
+    for (const key of keys) {
+      const kept = keepUnchanged(prev[key], next[key]);
+      if (kept !== prev[key] || !Object.hasOwn(prev, key)) same = false;
+      merged[key] = kept;
+    }
+    return (same ? prev : merged) as T;
+  }
+  return next;
 }

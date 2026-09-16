@@ -5,9 +5,11 @@ import {
   createMeeting,
   deleteMeeting,
   errorMessage,
+  getAudioUrl,
   getMeeting,
   listMeetings,
   processMeeting,
+  regenerateNotes,
 } from "./api";
 
 const fetchMock = vi.fn<typeof fetch>();
@@ -94,6 +96,55 @@ describe("requests", () => {
     });
   });
 
+  it("fills notes defaults for a meeting summarized before notes existed", async () => {
+    const meeting = meetingFixture();
+    const legacy = {
+      ...meeting,
+      summary: {
+        title: "Weekly sync",
+        overview: "The team agreed to ship the release on Friday.",
+        keyTakeaways: [],
+        decisions: [],
+        actionItems: [{ task: "Tag the release", owner: "Ana", due: null }],
+      },
+    };
+    fetchMock.mockResolvedValueOnce(jsonResponse(legacy));
+
+    const parsed = await getMeeting("abc");
+
+    expect(parsed.summary).toEqual({
+      ...legacy.summary,
+      keywords: [],
+      notes: [],
+      actionItems: [
+        { task: "Tag the release", owner: "Ana", due: null, startSecond: null },
+      ],
+    });
+  });
+
+  it("gets a signed audio url for an encoded id", async () => {
+    const audio = {
+      url: "https://store.private.blob.vercel-storage.com/recordings/abc.webm?sig=1",
+      expiresAt: "2026-09-16T13:00:00.000Z",
+    };
+    fetchMock.mockResolvedValueOnce(jsonResponse(audio));
+
+    await expect(getAudioUrl("a/b")).resolves.toEqual(audio);
+    expect(fetchMock).toHaveBeenCalledWith("/api/meetings/a%2Fb/audio", {
+      method: "GET",
+    });
+  });
+
+  it("regenerates notes", async () => {
+    const meeting = meetingFixture();
+    fetchMock.mockResolvedValueOnce(jsonResponse(meeting));
+
+    await expect(regenerateNotes("abc")).resolves.toEqual(meeting);
+    expect(fetchMock).toHaveBeenCalledWith("/api/meetings/abc/notes", {
+      method: "POST",
+    });
+  });
+
   it("deletes without reading the empty 204 body", async () => {
     const response = new Response(null, { status: 204 });
     const json = vi.spyOn(response, "json");
@@ -158,6 +209,34 @@ describe("errors", () => {
       code: "bad_response",
       retryable: false,
       status: 200,
+    });
+  });
+
+  it("rejects an audio url without an expiry", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ url: "https://memory.test/recordings/abc.webm" }),
+    );
+
+    const err = await rejection(getAudioUrl("abc"));
+
+    expect(err.code).toBe("bad_response");
+  });
+
+  it("keeps the notes_current refusal", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        envelope("notes_current", "These notes are already up to date.", false),
+        { status: 422 },
+      ),
+    );
+
+    const err = await rejection(regenerateNotes("abc"));
+
+    expect(err).toMatchObject({
+      status: 422,
+      code: "notes_current",
+      message: "These notes are already up to date.",
+      retryable: false,
     });
   });
 

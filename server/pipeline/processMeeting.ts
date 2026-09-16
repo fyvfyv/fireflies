@@ -20,6 +20,8 @@ const MAX_ERROR_MESSAGE_LENGTH = 500;
 const EMPTY_SUMMARY: Summary = {
   title: "Empty recording",
   overview: "No discernible speech was found in this recording.",
+  keywords: [],
+  notes: [],
   keyTakeaways: [],
   decisions: [],
   actionItems: [],
@@ -87,7 +89,7 @@ export async function processMeeting(
 // outlived its lease can't clobber the run that took it over.
 type Run = { deps: AppDeps; lease: Date };
 
-function alreadyProcessing() {
+export function alreadyProcessing() {
   return new HttpError(
     409,
     "already_processing",
@@ -96,7 +98,8 @@ function alreadyProcessing() {
   );
 }
 
-async function leaseLost(repo: MeetingRepo, id: string) {
+// Someone else changed the meeting under us: busy if it still exists.
+export async function leaseLost(repo: MeetingRepo, id: string) {
   return (await repo.get(id)) ? alreadyProcessing() : meetingNotFound();
 }
 
@@ -165,7 +168,10 @@ async function summarize(run: Run, row: MeetingRow): Promise<StepResult> {
     return { row: saved, details: { placeholder: true } };
   }
   await save(run, row.id, withStatus("summarizing"));
-  const { summary, model, truncated } = await deps.summarize(text);
+  const { summary, model, truncated } = await deps.summarize({
+    text,
+    segments: row.transcriptSegments,
+  });
   const saved = await save(run, row.id, {
     ...donePatch(row, summary),
     transcriptTruncated: truncated,

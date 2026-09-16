@@ -59,10 +59,10 @@ const transcribeMs = Date.now() - started;
 
 started = Date.now();
 const summary = hasWords(transcript.text, MIN_TRANSCRIPT_WORDS)
-  ? await summarizeTranscript(transcript.text, {
-      model: env.LLM_MODEL,
-      fallbackModels: env.LLM_FALLBACK_MODELS,
-    })
+  ? await summarizeTranscript(
+      { text: transcript.text, segments: transcript.segments },
+      { model: env.LLM_MODEL, fallbackModels: env.LLM_FALLBACK_MODELS },
+    )
   : null;
 const summarizeMs = Date.now() - started;
 

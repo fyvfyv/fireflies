@@ -1,8 +1,8 @@
 # Recap
 
-Record a meeting in the browser, transcribe it with real speech-to-text, and get a summary with key
-takeaways, decisions and action items. A simplified Fireflies.ai clone built as an engineering
-take-home.
+Record a meeting in the browser, transcribe it with real speech-to-text, and get topic notes,
+decisions and action items where every point links back to the moment it was said. A simplified
+Fireflies.ai clone built as an engineering take-home.
 
 **Live:** `<LIVE_URL>` · **Write-up:** [docs/WRITEUP.md](docs/WRITEUP.md) · **Plan:**
 [docs/plans/](docs/plans/)
@@ -12,14 +12,44 @@ take-home.
 
 ## Try it in 60 seconds
 
-1. Open the seeded meeting: `<LIVE_URL>/m/<SEEDED_MEETING_ID>`. It shows a finished run with a
-   summary, decisions, action items and a timestamped transcript.
-2. On the home page, click **Try a sample**. It sends a bundled 2-minute standup recording
+1. Open the seeded meeting: `<LIVE_URL>/m/<SEEDED_MEETING_ID>`. Click any highlighted timestamp:
+   the recording plays from that moment and the transcript follows along.
+2. On the home page, click **Try a 2-minute sample**. It sends a bundled standup recording
    (`public/samples/standup.webm`) through the same production pipeline, and the meeting page
    shows each step as it runs.
-3. Click **Upload audio file** and pick a WebM, M4A, MP3, WAV or OGG file (up to 25 MiB).
-4. Click **Start recording**, talk for a bit, click **Stop recording**, then **Save & transcribe**.
-   This needs a microphone and a secure context (HTTPS or `localhost`).
+3. Click **Upload audio**, or drop a WebM, M4A, MP3, WAV or OGG file (up to 25 MiB) anywhere on
+   the home page.
+4. Click **Start recording**, talk for a bit, click **Stop recording**, then **Save and
+   transcribe**. This needs a microphone and a secure context (HTTPS or `localhost`).
+
+## What you get
+
+- **Topic notes.** The summary is a document of topic sections in the order they came up. Each
+  section has a one-line gist, bullet points with the key phrase in bold, and sub-points. Every
+  section, point and action item carries a timestamp from the transcript.
+- **Timestamps that play.** A timestamp is a highlighter mark. Clicking it plays the recording from
+  that moment. The audio comes from a signed, one-hour URL for the private blob.
+- **Topic tape.** The player at the bottom draws the meeting as a strip of colored topic spans with
+  ticks for action items. It is also the scrubber: click, drag, or use the arrow keys (±5 s) and
+  Page Up/Down (±30 s). Space plays and pauses; `j` and `l` skip 10 s.
+- **Now playing.** While audio plays, the current section's color rail grows in the notes, and the
+  spoken sentence is highlighted in the transcript, which scrolls along unless you are reading
+  elsewhere.
+- **Transcript.** A side rail on wide screens and a tab on narrow ones. It has search with a match
+  counter and Enter / Shift+Enter navigation, and paragraphs that start with a clickable time.
+- **Action items.** Grouped by owner, with due dates and timestamps. The checkboxes are kept in the
+  browser (`localStorage`).
+- **Copy.** "Copy notes" puts rich text (headings, bullets, bold, times) and Markdown on the
+  clipboard, so it pastes cleanly into docs and chat. The transcript has its own copy button, the
+  header copies a link to the meeting, and the overflow menu repeats both copies and downloads the
+  audio.
+- **Older meetings.** A summary made before topic notes existed shows a "Generate detailed notes"
+  button, which calls `POST /api/meetings/:id/notes`.
+- **Home.** A recorder with a live waveform and a large clock, a sample and upload path for people
+  without a microphone, and a searchable meeting list grouped by day.
+- **Design.** Mona Sans throughout. Light and dark themes follow the system setting. Reduced motion
+  is respected, and layouts work down to 360 px. The design spec is in
+  [docs/specs/](docs/specs/2026-09-17-redesign.md).
 
 ## Architecture
 
@@ -144,7 +174,9 @@ Every 4xx/5xx body is `{ "error": { "code", "message", "retryable" } }`.
 | POST | `/api/meetings` | 201 meeting (`uploaded`) · 400 `validation` / `bad_request` · 429 `rate_limited` |
 | GET | `/api/meetings` | 200 list of the 50 newest meetings |
 | GET | `/api/meetings/:id` | 200 meeting · 404 |
+| GET | `/api/meetings/:id/audio` | 200 `{ url, expiresAt }`: a presigned, read-only URL for the private recording, valid for 1 h, sent with `Cache-Control: private, no-store` · 404 `not_found` / `audio_missing` |
 | POST | `/api/meetings/:id/process` | 200 final meeting · 404 · 409 `already_processing` · 422 `not_processable` / `not_retryable` / `give_up` |
+| POST | `/api/meetings/:id/notes` | Rewrites a summary made before notes existed, then answers like `process`: 200 final meeting (`done`, or `failed` at `summarize` for the usual retry) · 404 · 409 `already_processing` · 422 `notes_current` unless the meeting is `done`, its transcript has at least 5 words and its summary has no notes |
 | DELETE | `/api/meetings/:id` | 204 (blob deleted best-effort) · 404 |
 
 `POST /api/meetings` takes `{ title?, audioPathname, contentType, sizeBytes, source,
@@ -154,6 +186,16 @@ is one of the allowed audio types (codec parameters are fine); `sizeBytes` is 1 
 is `mic`, `upload` or `demo`; `durationSeconds` is the recorder's estimate (0 to 24 h). List items
 carry `id, title, status, source, durationSeconds, overviewSnippet` (first 140 characters),
 `actionItemCount, stalled, createdAt, updatedAt`.
+
+A meeting's `summary` is `{ title, overview, keywords, notes, keyTakeaways, decisions,
+actionItems }`. `notes` holds 1 to 8 topic sections in chronological order (none in the placeholder
+for a recording with too little speech), each `{ heading, gist, startSecond, points }`. A section
+has up to 6 points `{ text, startSecond, details }` (`text` may contain `**bold**` spans, the only
+markdown kept; up to 4 `details`). Action items are
+`{ task, owner, due, startSecond }`, and there are up to 8 `keywords`. Every `startSecond` is the
+start of the transcript segment where the item is first discussed, or `null` when the transcript
+has no timestamps. Summaries stored before notes existed come back with `keywords: []`,
+`notes: []` and `startSecond: null`; `POST /api/meetings/:id/notes` upgrades them.
 
 ## Local setup
 
@@ -262,7 +304,7 @@ requests.
 ## Known limitations and cuts
 
 - No speaker diarization (the gateway and Groq Whisper don't return speakers), no live captions,
-  no audio playback (blobs are private), no title editing.
+  no title editing. Action-item checkboxes live in the browser, not in the database.
 - No orphan-blob cleanup, and no rate limit on the upload token endpoint (see above).
 - The API client has no fetch timeout, so a hung `GET` stops polling until the page is reloaded.
 - The rate limit counts, then inserts, in two statements. Parallel creates from one client can
@@ -281,8 +323,11 @@ requests.
 - `drizzleRepo` is not exercised in CI: the repo contract suite runs against Postgres only when
   `TEST_DATABASE_URL` is set. `blobStorage` is tested against a mocked `@vercel/blob` only.
 - The client bundle is just over Vite's 500 kB warning, mostly the `@vercel/blob` client.
-- Also cut: job queue, cron, SSE, Playwright E2E, Storybook, dark mode, i18n. The full list is in
-  the plan's "Explicitly out of scope" section.
+- Mona Sans's tabular figures are a separate monospace design (slashed zero), so the app keeps
+  proportional digits. Ticking clocks put each digit in a fixed-width cell (`ClockDigits`).
+- Also cut: job queue, cron, SSE, Playwright E2E, Storybook, i18n, an "Ask AI" panel, and the
+  Fireflies sidebar filters (sentiment, speaker talk time). The full list is in the plan's
+  "Explicitly out of scope" section.
 
 ## Third-party tools
 
@@ -295,6 +340,9 @@ requests.
 | tailwindcss, @tailwindcss/vite | Styling (Tailwind v4) |
 | tailwind-merge, clsx | `tw()` class merging with the app's custom text scale (`src/twMerge.ts`) |
 | @radix-ui/react-slot | `asChild` support in the unstyled `Button` |
+| @radix-ui/react-tabs, react-dropdown-menu, react-popover, react-tooltip, react-slider | Unstyled, accessible primitives (tabs, overflow menu, delete confirmation, tooltips, the topic-tape scrubber), styled with Tailwind |
+| lucide-react | Icons |
+| Mona Sans (Google Fonts) | The single typeface; its width axis sets the display type |
 | hono | API framework, runs on Vercel Functions and Node |
 | @hono/node-server | Local API server (`server/dev.ts`) |
 | @hono/zod-validator | Request validation with the shared zod schemas |
