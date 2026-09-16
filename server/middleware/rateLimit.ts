@@ -5,9 +5,7 @@ import { errorBody } from "../http/errors.js";
 
 const WINDOW_MS = 60 * 60 * 1000;
 
-// Counts rows the caller already created instead of keeping a counter table.
-// Retry-After is the whole window: the repo only counts, so it can't tell when
-// the oldest counted create expires.
+// Retry-After is the whole window: the repo only counts, so it can't tell when a slot frees up.
 export function rateLimit({
   repo,
   now,

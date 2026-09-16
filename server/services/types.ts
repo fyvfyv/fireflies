@@ -5,11 +5,9 @@ export type SummaryInput = { text: string; segments: Segment[] | null };
 export type SummaryResult = {
   summary: Summary;
   model: string;
-  /** The transcript was cut to fit the prompt. */
   truncated: boolean;
 };
 
-// Like SttError, the message is persisted and shown to users.
 export class SummaryError extends Error {
   readonly retryable: boolean;
 

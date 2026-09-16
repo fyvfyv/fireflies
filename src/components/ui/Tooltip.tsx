@@ -6,18 +6,11 @@ const DELAY_MS = 300;
 
 const ProviderMounted = createContext(false);
 
-/** Shares hover delays across tooltips; mounted once by the app shell. */
-export function TooltipProvider({
-  children,
-  delayDuration = DELAY_MS,
-}: {
-  children: ReactNode;
-  delayDuration?: number;
-}) {
+export function TooltipProvider({ children }: { children: ReactNode }) {
   return (
     <ProviderMounted value={true}>
       <TooltipPrimitive.Provider
-        delayDuration={delayDuration}
+        delayDuration={DELAY_MS}
         skipDelayDuration={DELAY_MS}
       >
         {children}
@@ -26,50 +19,38 @@ export function TooltipProvider({
   );
 }
 
-/*
- * Radix opens a tooltip on any focus. Menus and popovers hand focus back to
- * their trigger when they close, which would pop the tooltip up right after a
- * mouse user picks an item, so focus only opens it after keyboard use. This
- * tracks the last input itself rather than asking `:focus-visible`, whose
- * jsdom emulation goes stale between tests.
- */
+// Radix opens on any focus, even a menu returning focus to its trigger, so only
+// keyboard focus opens it. Tracked by hand: jsdom's :focus-visible goes stale.
 let lastInputWasPointer = false;
-if (typeof document !== "undefined") {
-  document.addEventListener(
-    "pointerdown",
-    () => {
-      lastInputWasPointer = true;
-    },
-    true,
-  );
-  document.addEventListener(
-    "keydown",
-    (event) => {
-      // Shortcuts such as Cmd+C are not keyboard navigation.
-      if (!event.metaKey && !event.ctrlKey && !event.altKey) {
-        lastInputWasPointer = false;
-      }
-    },
-    true,
-  );
-}
+document.addEventListener(
+  "pointerdown",
+  () => {
+    lastInputWasPointer = true;
+  },
+  true,
+);
+document.addEventListener(
+  "keydown",
+  (event) => {
+    if (!event.metaKey && !event.ctrlKey && !event.altKey) {
+      lastInputWasPointer = false;
+    }
+  },
+  true,
+);
 
 function skipPointerFocus(event: FocusEvent<HTMLElement>) {
-  // A prevented focus event makes radix skip opening.
+  // Radix doesn't open on a prevented focus event.
   if (lastInputWasPointer) event.preventDefault();
 }
 
 type TooltipProps = {
-  /** Nothing is rendered around the trigger when empty. */
   content: ReactNode;
-  /** A single focusable element (the trigger). */
   children: ReactNode;
   side?: "top" | "right" | "bottom" | "left";
   align?: "start" | "center" | "end";
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
-  delayDuration?: number;
-  className?: string;
 };
 
 export function Tooltip({
@@ -79,8 +60,6 @@ export function Tooltip({
   align = "center",
   open,
   onOpenChange,
-  delayDuration,
-  className,
 }: TooltipProps) {
   const hasProvider = use(ProviderMounted);
   if (content === null || content === undefined || content === "") {
@@ -88,11 +67,7 @@ export function Tooltip({
   }
 
   const tooltip = (
-    <TooltipPrimitive.Root
-      open={open}
-      onOpenChange={onOpenChange}
-      delayDuration={delayDuration}
-    >
+    <TooltipPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <TooltipPrimitive.Trigger asChild onFocus={skipPointerFocus}>
         {children}
       </TooltipPrimitive.Trigger>
@@ -104,7 +79,6 @@ export function Tooltip({
           collisionPadding={8}
           className={tw(
             "z-50 max-w-64 rounded-md bg-ink px-2 py-1 text-caption text-pretty text-sheet shadow-float",
-            className,
           )}
         >
           {content}
@@ -113,8 +87,7 @@ export function Tooltip({
     </TooltipPrimitive.Root>
   );
 
-  // Radix throws without a provider; components rendered on their own (in
-  // tests or outside the shell) get a local one instead.
+  // Radix throws without a provider.
   return hasProvider ? (
     tooltip
   ) : (

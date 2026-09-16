@@ -9,12 +9,9 @@ export type StepperMeeting = Pick<Meeting, "status" | "errorStep" | "stalled">;
 
 type StepState = "pending" | "active" | "done" | "error" | "stalled";
 
-// Nouns, so each label reads right whether its step is pending, running,
-// finished or failed.
 const STEPS = ["Upload", "Transcript", "Notes", "Done"] as const;
 
-// Index of the step each status is working on; `uploaded` already counts as
-// transcribing because the page starts the pipeline right away.
+// `uploaded` counts as transcribing: the page starts the pipeline right away.
 const CURRENT_STEP: Record<Exclude<MeetingStatus, "failed">, number> = {
   uploaded: 1,
   transcribing: 1,
@@ -83,7 +80,6 @@ const stateText: Record<StepState, string> = {
 
 type StatusStepperProps = {
   meeting: StepperMeeting;
-  /** When the current run started (ISO); shows a running clock. */
   since?: string | null;
   className?: string;
 };
@@ -99,13 +95,9 @@ export function StatusStepper({
   const list = steps(meeting);
 
   return (
-    // Gap rather than margins: a hidden (sr-only) message block is out of
-    // flow and takes no gap, so a failed run leaves no blank space.
     <div className={tw("flex flex-col gap-5", className)}>
       <ol
         aria-label="Processing steps"
-        // At least as wide as each label: at 360 px equal columns would cut
-        // "Transcript" off.
         className={tw(
           "grid grid-cols-[repeat(4,minmax(max-content,1fr))] gap-x-2",
         )}
@@ -143,8 +135,7 @@ export function StatusStepper({
         ))}
       </ol>
       <div
-        // FailedBanner states a failure visibly; the status stays mounted
-        // (hidden) so the change is still announced.
+        // sr-only rather than unmounted, so the failure is still announced.
         className={tw("space-y-0.5", problem && "sr-only")}
       >
         <div className={tw("flex flex-wrap items-baseline gap-x-3")}>
@@ -171,7 +162,6 @@ function StepMarker({ state }: { state: StepState }) {
         />
       );
     case "active":
-      // The only looping motion on the page: work in progress.
       return (
         <span aria-hidden="true" className={tw(base, "border-2 border-rule")}>
           <span
@@ -203,7 +193,7 @@ function StepMarker({ state }: { state: StepState }) {
   }
 }
 
-// Kept out of the status region so screen readers aren't told every second.
+// Outside the status region so screen readers aren't told every second.
 function Elapsed({ since }: { since: string }) {
   const started = new Date(since).getTime();
   const [now, setNow] = useState(() => Date.now());
@@ -215,7 +205,6 @@ function Elapsed({ since }: { since: string }) {
     <p className={tw("flex items-center gap-1.5 type-small text-graphite")}>
       <Timer aria-hidden="true" size={14} />
       <span className={tw("sr-only")}>Elapsed</span>
-      {/* The digits, not the icon's box edge, set the row's baseline. */}
       <ClockDigits
         className={tw("self-baseline")}
         value={formatShortTime((now - started) / 1_000)}

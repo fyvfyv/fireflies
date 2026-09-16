@@ -1,15 +1,10 @@
 import { z } from "zod";
-import {
-  DEFAULT_LLM_FALLBACK_MODELS,
-  DEFAULT_LLM_MODEL,
-  DEFAULT_STT_MODEL,
-} from "./services/models.js";
 
 const envSchema = z.object({
   STT_PROVIDER: z.enum(["gateway", "groq"]).default("gateway"),
-  STT_MODEL: z.string().default(DEFAULT_STT_MODEL),
+  STT_MODEL: z.string().default("openai/whisper-1"),
   GROQ_API_KEY: z.string().optional(),
-  LLM_MODEL: z.string().default(DEFAULT_LLM_MODEL),
+  LLM_MODEL: z.string().default("anthropic/claude-haiku-4.5"),
   LLM_FALLBACK_MODELS: z
     .string()
     .transform((list) =>
@@ -18,7 +13,7 @@ const envSchema = z.object({
         .map((model) => model.trim())
         .filter(Boolean),
     )
-    .default(DEFAULT_LLM_FALLBACK_MODELS),
+    .default(["google/gemini-2.5-flash"]),
 });
 
 export type Env = z.infer<typeof envSchema>;

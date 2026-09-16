@@ -1,41 +1,33 @@
 import type { MeetingListItem } from "@shared/schemas";
 
-export type MeetingGroup<T> = { label: string; items: T[] };
-
 const DAY_MS = 24 * 60 * 60 * 1000;
 const monthYear = new Intl.DateTimeFormat("en", {
   month: "long",
   year: "numeric",
 });
 
-// A local calendar date as a day count. Built from the local date parts, so
-// DST days (23 or 25 hours long) still count as one day.
+// Built from local date parts, so 23/25-hour DST days count as one day.
 const dayNumber = (date: Date) =>
   Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / DAY_MS;
 
-// "This week" is the calendar week, not the last seven days: on a Monday,
-// last Friday is not "this week". Weeks start on Monday (ISO 8601).
+// Calendar week starting Monday (ISO 8601), not the last seven days.
 const weekStart = (now: Date) => dayNumber(now) - ((now.getDay() + 6) % 7);
 
 function dayLabel(date: Date, now: Date): string {
   const day = dayNumber(date);
   const daysAgo = dayNumber(now) - day;
-  // Future timestamps only come from clock skew between browser and server.
+  // Future timestamps come from browser/server clock skew.
   if (daysAgo <= 0) return "Today";
   if (daysAgo === 1) return "Yesterday";
   if (day >= weekStart(now)) return "Earlier this week";
   return monthYear.format(date);
 }
 
-/**
- * Groups by the viewer's local day. Groups keep the order in which they first
- * appear, so a newest-first list stays newest-first.
- */
-export function groupByDay<T extends { createdAt: string }>(
-  items: readonly T[],
+export function groupByDay(
+  items: MeetingListItem[],
   now: Date,
-): MeetingGroup<T>[] {
-  const groups = new Map<string, T[]>();
+): { label: string; items: MeetingListItem[] }[] {
+  const groups = new Map<string, MeetingListItem[]>();
   for (const item of items) {
     const label = dayLabel(new Date(item.createdAt), now);
     const group = groups.get(label);
@@ -55,7 +47,6 @@ const monthDay = new Intl.DateTimeFormat("en", {
 });
 const fullDate = new Intl.DateTimeFormat("en", { dateStyle: "medium" });
 
-/** The list's time column: a time for today's meetings, otherwise a date. */
 export function rowTime(iso: string, now: Date): string {
   const date = new Date(iso);
   if (dayNumber(date) >= dayNumber(now)) return time.format(date);
@@ -78,9 +69,8 @@ export function filterMeetings(
 
 export type TopicIndex = 1 | 2 | 3 | 4 | 5 | 6;
 
-/** A stable topic color per meeting, so a row keeps its swatch across visits. */
 export function topicFor(id: string): TopicIndex {
-  // FNV-1a: cheap, and spreads similar ids (UUIDs) well.
+  // FNV-1a: cheap, and spreads similar UUIDs well.
   let hash = 0x811c9dc5;
   for (let i = 0; i < id.length; i++) {
     hash ^= id.charCodeAt(i);

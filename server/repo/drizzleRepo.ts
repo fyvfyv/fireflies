@@ -25,10 +25,7 @@ import {
 const live = (id: string, ...conditions: (SQL | undefined)[]) =>
   and(eq(meetings.id, id), isNull(meetings.deletedAt), ...conditions);
 
-// Timestamps come from the injected JS clock, not the database's now(), so the
-// lease comparison and rate-limit windows all use one clock. The database is
-// passed as a getter so importing the app (e.g. for the health check) never
-// requires DATABASE_URL.
+// Uses the injected clock, not SQL now(), so leases and rate-limit windows share one clock.
 export function drizzleRepo(
   getDb: () => Db,
   now: () => Date = () => new Date(),
@@ -133,8 +130,7 @@ export function drizzleRepo(
       return result?.n ?? 0;
     },
 
-    // One conditional UPDATE ... RETURNING: neon-http has no interactive
-    // transactions, and this is race-free without one.
+    // One conditional UPDATE: neon-http has no interactive transactions.
     async claimLease(id, at, leaseMs) {
       const [row] = await getDb()
         .update(meetings)
@@ -144,8 +140,7 @@ export function drizzleRepo(
       return row ?? null;
     },
 
-    // A missing `notes` key and an empty list both mean "no notes"; comparing
-    // with '[]' also can't fail on a non-array the way jsonb_array_length would.
+    // Unlike jsonb_array_length, this treats a missing `notes` as empty and can't fail on a non-array.
     async reopenLegacySummary(id, at, leaseMs, patch) {
       return patchWhere(
         id,

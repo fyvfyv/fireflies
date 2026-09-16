@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { holdsLease } from "../../shared/status.js";
 import {
   DELETED_CONTENT,
   LIST_LIMIT,
@@ -8,18 +9,11 @@ import {
   OVERVIEW_SNIPPET_LENGTH,
 } from "./types.js";
 
-// Rows are cloned on the way in and out so callers can't mutate stored state,
-// matching what a real database gives them.
-export function memoryRepo(now: () => Date = () => new Date()): MeetingRepo {
+export function memoryRepo(now: () => Date): MeetingRepo {
   const rows = new Map<string, MeetingRow>();
   const liveRow = (id: string) => {
     const row = rows.get(id);
-    return row && row.deletedAt === null ? row : undefined;
-  };
-
-  const leaseHeld = (row: MeetingRow, at: Date, leaseMs: number) => {
-    const lease = row.processingStartedAt;
-    return lease !== null && lease.getTime() >= at.getTime() - leaseMs;
+    return row?.deletedAt === null ? row : undefined;
   };
 
   const patchRow = (id: string, patch: MeetingPatch, lease?: Date) => {
@@ -113,7 +107,11 @@ export function memoryRepo(now: () => Date = () => new Date()): MeetingRepo {
 
     async claimLease(id, at, leaseMs) {
       const row = liveRow(id);
-      if (!row || row.status === "done" || leaseHeld(row, at, leaseMs)) {
+      if (
+        !row ||
+        row.status === "done" ||
+        holdsLease(row.processingStartedAt, at, leaseMs)
+      ) {
         return null;
       }
       const claimed = { ...row, processingStartedAt: at, updatedAt: at };
@@ -123,8 +121,13 @@ export function memoryRepo(now: () => Date = () => new Date()): MeetingRepo {
 
     async reopenLegacySummary(id, at, leaseMs, patch) {
       const row = liveRow(id);
-      if (row?.status !== "done" || row.summary?.notes?.length) return null;
-      if (leaseHeld(row, at, leaseMs)) return null;
+      if (
+        row?.status !== "done" ||
+        row.summary?.notes?.length ||
+        holdsLease(row.processingStartedAt, at, leaseMs)
+      ) {
+        return null;
+      }
       return patchRow(id, patch);
     },
 

@@ -3,8 +3,7 @@ import type { MeetingStatus } from "./schemas.js";
 
 type ProcessStep = "transcribe" | "summarize" | "none";
 
-// Driven by persisted artefacts rather than status, so a retry after a failed
-// summary resumes at summarize and never pays for speech-to-text twice.
+// Driven by stored artefacts, not status, so a retry never pays for speech-to-text twice.
 export function nextStep(meeting: {
   transcriptText: string | null;
   summary: unknown;
@@ -14,8 +13,7 @@ export function nextStep(meeting: {
   return "none";
 }
 
-// A run has started and not yet ended. `transcribed` counts: a run passes
-// through it between its two steps.
+// `transcribed` counts: a run passes through it between its two steps.
 export function isInProgress(status: MeetingStatus): boolean {
   return (
     status === "transcribing" ||
@@ -24,17 +22,22 @@ export function isInProgress(status: MeetingStatus): boolean {
   );
 }
 
+export function holdsLease(
+  lease: Date | null,
+  now: Date,
+  leaseMs = LEASE_MS,
+): boolean {
+  return lease !== null && lease.getTime() >= now.getTime() - leaseMs;
+}
+
 export function isStalled(
   meeting: { status: MeetingStatus; processingStartedAt: Date | null },
   now: Date,
 ): boolean {
   const { status, processingStartedAt: lease } = meeting;
   if (status === "done" || status === "failed") return false;
-  // A started run without a lease can only have been interrupted; an
-  // `uploaded` row without one just hasn't been picked up yet.
   if (lease === null) return isInProgress(status);
-  // Covers `uploaded` too: a run killed right after taking the lease.
-  return lease.getTime() < now.getTime() - LEASE_MS;
+  return !holdsLease(lease, now);
 }
 
 type ProcessCheck =

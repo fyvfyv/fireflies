@@ -36,7 +36,6 @@ type MeetingListRow = Pick<
 export const OVERVIEW_SNIPPET_LENGTH = 140;
 export const LIST_LIMIT = 50;
 
-// What a delete wipes from the row it keeps for rate limiting.
 export const DELETED_CONTENT = {
   title: "",
   language: null,
@@ -48,46 +47,29 @@ export const DELETED_CONTENT = {
 
 export type MeetingRepo = {
   create(meeting: NewMeeting): Promise<MeetingRow>;
-  // Deleted meetings are invisible to every method except countCreatedSince.
+  // Deleted rows are hidden from every method but countCreatedSince, so deleting never frees rate-limit quota.
   get(id: string): Promise<MeetingRow | null>;
-  /** Newest first, at most LIST_LIMIT rows. */
   list(): Promise<MeetingListRow[]>;
-  /**
-   * With `lease`, writes only while the meeting still holds that lease, so a
-   * run that was taken over can't overwrite its successor's progress.
-   */
+  /** With `lease`, writes only while it is still held, so a taken-over run can't overwrite its successor. */
   update(
     id: string,
     patch: MeetingPatch,
     lease?: Date,
   ): Promise<MeetingRow | null>;
-  /** Soft delete: wipes DELETED_CONTENT and hides the row. */
   delete(id: string): Promise<boolean>;
-  /** Counts deleted meetings too, so deleting never frees rate-limit quota. */
   countCreatedSince(since: Date, ipHash?: string): Promise<number>;
-  /**
-   * Atomically takes the processing lease: succeeds only when the meeting is
-   * not done and has no lease younger than `leaseMs`. Null means someone else
-   * holds it (or the meeting is gone or done).
-   */
   claimLease(
     id: string,
     now: Date,
     leaseMs: number,
   ): Promise<MeetingRow | null>;
-  /**
-   * Applies `patch` only while the meeting is done, its summary has no notes
-   * and it holds no lease younger than `leaseMs`, all in one atomic write, so
-   * reopening a legacy summary can't race a run or clear notes saved since the
-   * caller read the row. Null otherwise.
-   */
+  /** One atomic write, so reopening can't race a run or clear notes saved since the caller's read. */
   reopenLegacySummary(
     id: string,
     now: Date,
     leaseMs: number,
     patch: MeetingPatch,
   ): Promise<MeetingRow | null>;
-  /** Null unless the meeting still holds `lease`. */
   releaseLease(
     id: string,
     lease: Date,

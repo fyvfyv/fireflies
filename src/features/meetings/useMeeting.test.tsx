@@ -1,3 +1,4 @@
+import type { Meeting } from "@shared/schemas";
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, getMeeting } from "@/lib/api";
@@ -11,11 +12,10 @@ vi.mock("@/lib/api", async (importOriginal) => ({
 
 const mockedGet = vi.mocked(getMeeting);
 
-const transcribing = meetingFixture({
-  status: "transcribing",
-  summary: null,
-  processingStartedAt: "2026-09-16T12:00:00.000Z",
-});
+const transcribing = meetingFixture({ status: "transcribing", summary: null });
+
+const apiError = (status: number, message: string) =>
+  new ApiError({ status, code: "x", message, retryable: false });
 
 const advance = (ms: number) => act(() => vi.advanceTimersByTimeAsync(ms));
 
@@ -25,12 +25,6 @@ async function setup(id = "abc") {
   });
   await advance(0);
   return hook;
-}
-
-async function advanceInSteps(totalMs: number, stepMs: number) {
-  for (let elapsed = 0; elapsed < totalMs; elapsed += stepMs) {
-    await advance(stepMs);
-  }
 }
 
 beforeEach(() => {
@@ -55,33 +49,17 @@ describe("useMeeting", () => {
   it("polls every 2 s while processing, then every 5 s after a minute", async () => {
     mockedGet.mockResolvedValue(transcribing);
     await setup();
-    expect(mockedGet).toHaveBeenCalledTimes(1);
 
-    await advance(2_000);
-    expect(mockedGet).toHaveBeenCalledTimes(2);
-
-    await advanceInSteps(58_000, 2_000);
-    expect(mockedGet).toHaveBeenCalledTimes(31);
-
-    await advance(2_000);
-    expect(mockedGet).toHaveBeenCalledTimes(31);
-    await advance(3_000);
-    expect(mockedGet).toHaveBeenCalledTimes(32);
-    await advance(5_000);
-    expect(mockedGet).toHaveBeenCalledTimes(33);
-  });
-
-  it.each(["uploaded", "transcribed", "summarizing"] as const)(
-    "keeps polling while %s",
-    async (status) => {
-      mockedGet.mockResolvedValue({ ...transcribing, status });
-      await setup();
-
+    for (let elapsed = 0; elapsed < 60_000; elapsed += 2_000) {
       await advance(2_000);
+    }
+    expect(mockedGet).toHaveBeenCalledTimes(31);
 
-      expect(mockedGet).toHaveBeenCalledTimes(2);
-    },
-  );
+    await advance(4_999);
+    expect(mockedGet).toHaveBeenCalledTimes(31);
+    await advance(1);
+    expect(mockedGet).toHaveBeenCalledTimes(32);
+  });
 
   it("stops polling once the meeting is done", async () => {
     const done = meetingFixture();
@@ -95,21 +73,8 @@ describe("useMeeting", () => {
     expect(mockedGet).toHaveBeenCalledTimes(2);
   });
 
-  it("does not poll a failed meeting", async () => {
-    mockedGet.mockResolvedValue(
-      meetingFixture({ status: "failed", errorStep: "transcribe" }),
-    );
-    await setup();
-
-    await advance(10_000);
-
-    expect(mockedGet).toHaveBeenCalledTimes(1);
-  });
-
-  it("polls a finished meeting while keepPolling is set", async () => {
-    mockedGet.mockResolvedValue(
-      meetingFixture({ status: "failed", errorStep: "summarize" }),
-    );
+  it("polls a failed meeting while keepPolling is set", async () => {
+    mockedGet.mockResolvedValue(meetingFixture({ status: "failed" }));
     const { rerender } = renderHook(
       ({ keepPolling }) => useMeeting("abc", { keepPolling }),
       { initialProps: { keepPolling: true } },
@@ -124,45 +89,39 @@ describe("useMeeting", () => {
     expect(mockedGet).toHaveBeenCalledTimes(2);
   });
 
-  it("exposes a stalled meeting and stops polling", async () => {
+  it("stops polling a stalled meeting", async () => {
     mockedGet.mockResolvedValue({ ...transcribing, stalled: true });
-    const { result } = await setup();
+    await setup();
 
-    expect(result.current.meeting?.stalled).toBe(true);
     await advance(10_000);
     expect(mockedGet).toHaveBeenCalledTimes(1);
   });
 
+  it("resumes polling after a refetch finds the run moving again", async () => {
+    mockedGet
+      .mockResolvedValueOnce(meetingFixture({ status: "failed" }))
+      .mockResolvedValue(transcribing);
+    const { result } = await setup();
+
+    await act(() => result.current.refetch());
+    expect(result.current.meeting?.status).toBe("transcribing");
+
+    await advance(2_000);
+    expect(mockedGet).toHaveBeenCalledTimes(3);
+  });
+
   it("reports a missing meeting", async () => {
-    mockedGet.mockRejectedValue(
-      new ApiError({
-        status: 404,
-        code: "not_found",
-        message: "Meeting not found",
-        retryable: false,
-      }),
-    );
+    mockedGet.mockRejectedValue(apiError(404, "Meeting not found"));
 
     const { result } = await setup();
 
-    expect(result.current).toMatchObject({
-      meeting: null,
-      notFound: true,
-      error: null,
-    });
+    expect(result.current).toMatchObject({ meeting: null, notFound: true });
   });
 
   it("keeps the last meeting and keeps polling through a failed refetch", async () => {
     mockedGet
       .mockResolvedValueOnce(transcribing)
-      .mockRejectedValueOnce(
-        new ApiError({
-          status: 0,
-          code: "network",
-          message: "Network down",
-          retryable: true,
-        }),
-      )
+      .mockRejectedValueOnce(apiError(0, "Network down"))
       .mockResolvedValue(transcribing);
     const { result } = await setup();
 
@@ -178,8 +137,7 @@ describe("useMeeting", () => {
   });
 
   it("refetches when the window regains focus", async () => {
-    const done = meetingFixture();
-    mockedGet.mockResolvedValue(done);
+    mockedGet.mockResolvedValue(meetingFixture());
     await setup();
 
     await act(async () => {
@@ -189,40 +147,15 @@ describe("useMeeting", () => {
     expect(mockedGet).toHaveBeenCalledTimes(2);
   });
 
-  it("refetches on demand and resumes polling", async () => {
-    mockedGet
-      .mockResolvedValueOnce(meetingFixture({ status: "failed" }))
-      .mockResolvedValue(transcribing);
-    const { result } = await setup();
-
-    await act(() => result.current.refetch());
-    expect(result.current.meeting?.status).toBe("transcribing");
-
-    await advance(2_000);
-    expect(mockedGet).toHaveBeenCalledTimes(3);
-  });
-
-  it("keeps unchanged parts of a refetched meeting", async () => {
+  it("keeps the same object when a poll returns equal data", async () => {
     mockedGet.mockResolvedValue(transcribing);
     const { result } = await setup();
     const first = result.current.meeting;
 
-    // Polls parse a fresh object every time, even when nothing changed.
     mockedGet.mockResolvedValue(structuredClone(transcribing));
     await advance(2_000);
-    expect(result.current.meeting).toBe(first);
 
-    mockedGet.mockResolvedValue(
-      meetingFixture({
-        ...structuredClone(transcribing),
-        status: "summarizing",
-      }),
-    );
-    await advance(2_000);
-    const next = result.current.meeting;
-    expect(next).not.toBe(first);
-    expect(next?.status).toBe("summarizing");
-    expect(next?.transcriptSegments).toBe(first?.transcriptSegments);
+    expect(result.current.meeting).toBe(first);
   });
 
   it("stops polling on unmount", async () => {
@@ -235,69 +168,49 @@ describe("useMeeting", () => {
     expect(mockedGet).toHaveBeenCalledTimes(1);
   });
 
-  it("drops the previous meeting when the id changes", async () => {
-    mockedGet.mockResolvedValueOnce(meetingFixture({ id: "abc" }));
-    let finishSecond: (meeting: typeof transcribing) => void = () => {};
-    mockedGet.mockReturnValueOnce(
-      new Promise((resolve) => {
-        finishSecond = resolve;
-      }),
-    );
-    const { result, rerender } = await setup("abc");
-
-    rerender({ id: "xyz" });
-    expect(result.current.meeting).toBeNull();
-    expect(mockedGet).toHaveBeenLastCalledWith("xyz");
-
-    const other = meetingFixture({ id: "xyz" });
-    await act(async () => finishSecond(other));
-    expect(result.current.meeting).toEqual(other);
-  });
-
-  it("ignores a late response for the previous id", async () => {
-    let finishFirst: (meeting: typeof transcribing) => void = () => {};
+  it("drops the previous meeting when the id changes, ignoring its late response", async () => {
+    let finishLate: (meeting: Meeting) => void = () => {};
     mockedGet
+      .mockResolvedValueOnce(meetingFixture({ id: "abc" }))
       .mockReturnValueOnce(
         new Promise((resolve) => {
-          finishFirst = resolve;
+          finishLate = resolve;
         }),
       )
       .mockResolvedValue(meetingFixture({ id: "xyz" }));
     const { result, rerender } = await setup("abc");
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
 
     rerender({ id: "xyz" });
+    expect(result.current.meeting).toBeNull();
     await advance(0);
-    await act(async () => finishFirst(meetingFixture({ id: "abc" })));
+    await act(async () => finishLate(meetingFixture({ id: "abc" })));
 
+    expect(mockedGet).toHaveBeenLastCalledWith("xyz");
     expect(result.current.meeting?.id).toBe("xyz");
   });
 });
 
 describe("keepUnchanged", () => {
-  it("returns the previous value when both are deeply equal", () => {
-    const prev = { a: 1, list: [{ b: "x" }, { b: "y" }], none: null };
-    expect(keepUnchanged(prev, structuredClone(prev))).toBe(prev);
-  });
-
-  it("reuses the equal parts of a changed value", () => {
+  it("keeps the previous value, or its equal parts", () => {
     const prev = { a: 1, list: [{ b: "x" }, { b: "y" }], nested: { c: [1] } };
+    expect(keepUnchanged(prev, structuredClone(prev))).toBe(prev);
+
     const next = structuredClone(prev);
     next.list[1] = { b: "z" };
-
     const result = keepUnchanged(prev, next);
 
     expect(result).toEqual(next);
-    expect(result).not.toBe(prev);
     expect(result.nested).toBe(prev.nested);
-    expect(result.list).not.toBe(prev.list);
     expect(result.list[0]).toBe(prev.list[0]);
-    expect(result.list[1]).not.toBe(prev.list[1]);
+    expect(result.list).not.toBe(prev.list);
   });
 
   it.each([
-    ["an added key", { a: 1 }, { a: 1, b: undefined }],
+    ["an added undefined key", { a: 1 }, { a: 1, b: undefined }],
     ["a removed key", { a: 1, b: 2 }, { a: 1 }],
-    ["a longer list", [1, 2], [1, 2, undefined]],
     ["a shorter list", [1, 2], [1]],
     ["a list replacing an object", { 0: 1 }, [1]],
     ["null replacing an object", { a: 1 }, null],

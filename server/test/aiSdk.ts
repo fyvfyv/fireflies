@@ -4,10 +4,7 @@ import {
   type TranscriptionResult,
 } from "ai";
 
-// Fills the metadata fields adapters never read, so tests only spell out what matters.
-export function transcriptionResult(
-  overrides: Partial<TranscriptionResult> = {},
-): TranscriptionResult {
+export function transcriptionResult(): TranscriptionResult {
   return {
     text: " We ship on Friday. Ana owns the notes. ",
     segments: [
@@ -19,7 +16,6 @@ export function transcriptionResult(
     warnings: [],
     responses: [],
     providerMetadata: {},
-    ...overrides,
   };
 }
 

@@ -1,14 +1,14 @@
 import { createGroq } from "@ai-sdk/groq";
-import { GROQ_STT_MODEL } from "../models.js";
 import { transcribeWith } from "./transcribeWith.js";
 import type { SttProvider } from "./types.js";
 
+const MODEL = "whisper-large-v3-turbo";
+
 export function groqStt(apiKey: string): SttProvider {
-  const model = createGroq({ apiKey }).transcription(GROQ_STT_MODEL);
+  const model = createGroq({ apiKey }).transcription(MODEL);
   return {
-    name: `groq:${GROQ_STT_MODEL}`,
-    // Groq's default JSON response carries text only; verbose_json adds
-    // segments, language and duration.
+    name: `groq:${MODEL}`,
+    // Groq's default JSON is text only; verbose_json adds segments, language and duration.
     transcribe: ({ bytes }) =>
       transcribeWith(model, bytes, {
         groq: {

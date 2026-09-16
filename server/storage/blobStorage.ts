@@ -1,22 +1,19 @@
 import { del, get, issueSignedToken, presignUrl } from "@vercel/blob";
-import { HttpError } from "../http/errors.js";
+import { audioMissing } from "../http/errors.js";
 import { AUDIO_URL_TTL_MS, type Storage } from "./types.js";
 
 export function blobStorage(now: () => Date = () => new Date()): Storage {
   return {
     async readAudio(pathname) {
       const r = await get(pathname, { access: "private" });
-      if (r?.statusCode !== 200) {
-        throw new HttpError(404, "audio_missing", "Audio not found", false);
-      }
+      if (r?.statusCode !== 200) throw audioMissing();
       return {
         bytes: new Uint8Array(await new Response(r.stream).arrayBuffer()),
         contentType: r.blob.contentType,
       };
     },
 
-    // The token is scoped to this one blob and to reads, so a leaked URL
-    // exposes nothing else in the store.
+    // Scoped to this blob and to reads, so a leaked URL exposes nothing else.
     async audioUrl(pathname) {
       const token = await issueSignedToken({
         pathname,
@@ -34,7 +31,6 @@ export function blobStorage(now: () => Date = () => new Date()): Storage {
       };
     },
 
-    // Callers treat deletion as best effort and log failures themselves.
     delete: (pathname) => del(pathname),
   };
 }

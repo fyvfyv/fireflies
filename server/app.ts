@@ -15,7 +15,6 @@ export function createApp(deps: AppDeps) {
         err.status,
       );
     }
-    // Hono's own exceptions (e.g. malformed JSON bodies) are client errors, not 500s.
     if (err instanceof HTTPException) {
       return c.json(errorBody("bad_request", err.message, false), err.status);
     }

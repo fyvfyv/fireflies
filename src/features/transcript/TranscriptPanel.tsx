@@ -13,8 +13,8 @@ import {
 } from "lucide-react";
 import {
   Fragment,
-  type KeyboardEvent,
   memo,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
   useCallback,
   useDeferredValue,
@@ -44,7 +44,7 @@ import {
 
 const noop = () => {};
 
-// How long a reader's own scrolling keeps playback from moving the view.
+// Reader scrolling keeps playback from moving the view for this long.
 const FOLLOW_GRACE_MS = 4_000;
 // A smooth scroll takes a moment; the jump pill ignores that window.
 const AUTO_SCROLL_MS = 1_000;
@@ -60,12 +60,7 @@ const SCROLL_KEYS = new Set([
 type TranscriptPanelProps = {
   text: string | null;
   segments: Segment[] | null;
-  /**
-   * `rail`: a column with its own scroll area (wide screens).
-   * `page`: flows with the page (the transcript tab).
-   */
   layout?: "rail" | "page";
-  /** Whether a missing transcript is on its way (false for a failed run). */
   transcribing?: boolean;
   className?: string;
 };
@@ -79,7 +74,6 @@ export function TranscriptPanel({
 }: TranscriptPanelProps) {
   const headingId = useId();
   const hasSpeech = Boolean(text?.trim());
-  // Providers without timestamps only return the full text.
   const paragraphs = useMemo(
     () => transcriptParagraphs(text ?? "", segments),
     [text, segments],
@@ -110,8 +104,6 @@ export function TranscriptPanel({
       className={tw("relative flex min-h-0 flex-col", className)}
     >
       {page ? (
-        // The tab already says "Transcript"; the heading only names the
-        // region, and the copy button joins the search row.
         <h2 id={headingId} className={tw("sr-only")}>
           Transcript
         </h2>
@@ -165,8 +157,6 @@ function EmptyState({
   );
 }
 
-// No status or spinner: the processing steps next to it already report the
-// progress, so this only says what will appear here.
 function TranscribingState({ className }: { className?: string }) {
   return (
     <div className={tw("space-y-4 px-5 pb-6 md:px-6", className)}>
@@ -193,7 +183,6 @@ function TranscriptBody({
 }: {
   paragraphs: Paragraph[];
   layout: "rail" | "page";
-  /** Extra controls at the end of the search row. */
   actions?: ReactNode;
 }) {
   const { currentTime, playing, jump, seek } = usePlayer();
@@ -201,7 +190,6 @@ function TranscriptBody({
   const lastUserScroll = useRef(0);
   const lastAutoScroll = useRef(0);
 
-  // Search
   const [query, setQuery] = useState("");
   const [step, setStep] = useState(0);
   const deferredQuery = useDeferredValue(query);
@@ -225,11 +213,8 @@ function TranscriptBody({
   const searching = deferredQuery.trim() !== "" && matches.length > 0;
   const searchingRef = useRef(searching);
   searchingRef.current = searching;
-  // Times take 5 characters until an hour in, 7 after; one wide paragraph
-  // widens them all, so the text keeps one left edge.
   const longTimes = paragraphs.some((p) => (p.start ?? 0) >= 3600);
 
-  // Playback
   const started = playing || currentTime > 0 || jump !== null;
   const activeId = started ? activeSegment(paragraphs, currentTime) : null;
   const activeParagraph =
@@ -250,10 +235,7 @@ function TranscriptBody({
     centerIn(element, container());
   };
 
-  // Reading along: keep the spoken paragraph visible, unless the reader has
-  // scrolled in the last few seconds. A paragraph can be spoken for much
-  // longer than that pause, so the reader's scrolling (below) also calls
-  // `followLater` to look again once the pause ends.
+  // A paragraph can outlast the scroll grace, so reader scrolling re-runs `followLater`.
   const followLater = useRef(noop);
   // biome-ignore lint/correctness/useExhaustiveDependencies: runs when the spoken paragraph changes, not on every time update
   useEffect(() => {
@@ -261,7 +243,6 @@ function TranscriptBody({
     let timer: ReturnType<typeof setTimeout> | undefined;
     const follow = () => {
       clearTimeout(timer);
-      // Reading search results; following resumes when the query is cleared.
       if (searchingRef.current) return;
       const sinceScroll = Date.now() - lastUserScroll.current;
       if (sinceScroll < FOLLOW_GRACE_MS) {
@@ -281,16 +262,12 @@ function TranscriptBody({
     };
   }, [playing, activeParagraph]);
 
-  // A cleared search hands the view back to playback right away.
   const wasSearching = useRef(searching);
   useEffect(() => {
     if (wasSearching.current && !searching) followLater.current();
     wasSearching.current = searching;
   }, [searching]);
 
-  // Opened after playback moved while this view was closed (e.g. a timestamp
-  // picked in the notes tab on a narrow screen): show that moment. While
-  // playing, following does the same.
   // biome-ignore lint/correctness/useExhaustiveDependencies: only on opening
   useEffect(() => {
     if (playing || activeParagraph < 0) return;
@@ -300,8 +277,6 @@ function TranscriptBody({
     }
   }, []);
 
-  // A moment picked anywhere (notes, tape, keys) moves the transcript there,
-  // even while paused or without playable audio.
   const handledJump = useRef(jump?.id ?? 0);
   // biome-ignore lint/correctness/useExhaustiveDependencies: reacts to new jumps only
   useEffect(() => {
@@ -315,8 +290,7 @@ function TranscriptBody({
     }
   }, [jump]);
 
-  // The reader's own scrolling. Scroll events can't tell it apart from ours,
-  // so the inputs that cause it are watched instead.
+  // Scroll events can't tell the reader's scrolling from ours, so its inputs are watched.
   useEffect(() => {
     const element = scrollRef.current;
     const target: HTMLElement | Window =
@@ -326,7 +300,7 @@ function TranscriptBody({
       followLater.current();
     };
     const onKeyDown = (event: Event) => {
-      if (SCROLL_KEYS.has((event as globalThis.KeyboardEvent).key)) mark();
+      if (event instanceof KeyboardEvent && SCROLL_KEYS.has(event.key)) mark();
     };
     // Grabbing the rail's scrollbar lands on the scroll container itself.
     const onPointerDown = (event: Event) => {
@@ -344,7 +318,6 @@ function TranscriptBody({
     };
   }, [layout]);
 
-  // Where the spoken paragraph is relative to the view, for the jump pill.
   const [away, setAway] = useState<"up" | "down" | null>(null);
   // biome-ignore lint/correctness/useExhaustiveDependencies: container() only reads the layout and a ref
   useEffect(() => {
@@ -381,8 +354,7 @@ function TranscriptBody({
     if (element) bringIntoView(element);
   };
 
-  // The current search match. Keyed by what the match is, so a refetch that
-  // returns the same transcript in new objects doesn't pull the view back.
+  // Keyed by value, so a refetch returning equal data in new objects doesn't pull the view back.
   const currentMatch = matches[current];
   const currentKey = currentMatch
     ? `${current}:${currentMatch.paragraph}:${currentMatch.segment}:${currentMatch.start}:${deferredQuery}`
@@ -394,7 +366,7 @@ function TranscriptBody({
       `mark[data-match="${current}"]`,
     );
     if (!mark) return;
-    // Searching is reading: keep playback from pulling the view away.
+    // Stepping through matches counts as reading, so playback won't pull the view away.
     lastUserScroll.current = Date.now();
     const scroller = container();
     if (scroller) {
@@ -433,8 +405,6 @@ function TranscriptBody({
         className={tw(
           "px-5 pb-6 md:px-6",
           layout === "rail" &&
-            // Scrolled text fades out under the search field instead of
-            // being sliced at the edge.
             "min-h-0 flex-1 overflow-y-auto overscroll-contain pt-2 [mask-image:linear-gradient(to_bottom,transparent,black_12px)]",
         )}
       >
@@ -448,9 +418,7 @@ function TranscriptBody({
               longTimes={longTimes}
               activeId={index === activeParagraph ? activeId : null}
               matches={matchesByParagraph.get(index)}
-              current={
-                matches[current]?.paragraph === index ? current : undefined
-              }
+              current={currentMatch?.paragraph === index ? current : undefined}
               onSeek={onSeek}
             />
           ))}
@@ -481,7 +449,7 @@ function TranscriptSearch({
   actions?: ReactNode;
 }) {
   const searching = query.trim() !== "";
-  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
     if (event.key !== "Enter") return;
     event.preventDefault();
     onStep(event.shiftKey ? -1 : 1);
@@ -489,13 +457,10 @@ function TranscriptSearch({
 
   return (
     <div
-      // Read by the visibility checks: in the tab, text under this row is
-      // hidden.
       data-transcript-search=""
       className={tw(
         "flex items-center gap-2 px-5 pb-3 md:px-6",
-        // In the tab the search stays at hand while reading: it sticks under
-        // the sticky tab row (44px plus its hairline).
+        // Sticks under the sticky tab row (44px plus its hairline).
         layout === "page" &&
           "sticky top-[calc(2.75rem+1px)] z-10 bg-sheet pt-2",
       )}
@@ -558,18 +523,13 @@ function TranscriptSearch({
 type ParagraphViewProps = {
   paragraph: Paragraph;
   index: number;
-  /** Some paragraph starts past an hour, so times need a wider column. */
   longTimes: boolean;
-  /** The spoken segment, when it is in this paragraph. */
   activeId: number | null;
   matches: IndexedMatch[] | undefined;
-  /** The current match, when it is in this paragraph. */
   current: number | undefined;
   onSeek: (seconds: number) => void;
 };
 
-// Memoized: playback re-renders the body several times a second, but only
-// the paragraph holding the spoken segment actually changes.
 const ParagraphView = memo(function ParagraphView({
   paragraph,
   index,
@@ -638,7 +598,6 @@ function highlight(
   text: string,
   matches: IndexedMatch[] | undefined,
   current: number | undefined,
-  /** The segment already has the marker background. */
   spoken: boolean,
 ): ReactNode {
   if (!matches?.length) return text;
@@ -652,13 +611,10 @@ function highlight(
         data-match={match.index}
         data-current={match.index === current ? "" : undefined}
         className={tw(
-          // Clears the sticky tabs and search row above and the player bar
-          // below when scrolled to.
+          // Clears the sticky tabs and search row above and the player bar below.
           "rounded-[2px] scroll-mt-28 scroll-mb-32 box-decoration-clone",
-          // A marker on a marker disappears; underline matches instead.
           spoken &&
             "bg-transparent underline decoration-ink decoration-2 underline-offset-2",
-          // Thin and flush, so it doesn't crowd the neighbouring words.
           match.index === current &&
             "outline-[1.5px] outline-offset-0 outline-ink",
         )}
@@ -683,8 +639,7 @@ function JumpPill({
 }) {
   const Icon = direction === "up" ? ArrowUp : ArrowDown;
   return (
-    // A zero-height sticky row keeps the pill at the bottom edge of the view
-    // without taking space at the end of the transcript.
+    // A zero-height sticky row pins the pill without adding space after the transcript.
     <div
       className={tw(
         "pointer-events-none sticky flex h-0 justify-center",
@@ -708,9 +663,7 @@ function JumpPill({
   );
 }
 
-// Viewport helpers. The visible part of the window ends where the sticky
-// player bar starts; in the tab it begins below the sticky search row (and
-// the tabs above it). The rail is also cut off by the window and the bar.
+// The visible area excludes the sticky player bar and, in the tab, the sticky search row.
 function viewOf(scroller: HTMLElement | null) {
   const barTop =
     document.querySelector("[data-player-bar]")?.getBoundingClientRect().top ??
@@ -766,9 +719,5 @@ function centerIn(element: HTMLElement, scroller: HTMLElement | null) {
     0,
     scroller.scrollTop + (rect.top - box.top) - (box.height - rect.height) / 2,
   );
-  if (typeof scroller.scrollTo === "function") {
-    scroller.scrollTo({ top, behavior });
-  } else {
-    scroller.scrollTop = top;
-  }
+  scroller.scrollTo({ top, behavior });
 }

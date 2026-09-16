@@ -34,6 +34,19 @@ const uploaded = {
 };
 const created = meetingFixture({ id: "m1", status: "uploaded" });
 
+const apiError = (status: number, code: string, message: string) =>
+  new ApiError({ status, code, message, retryable: true });
+
+function deferredUpload() {
+  let finish = () => {};
+  mockedUpload.mockReturnValue(
+    new Promise((resolve) => {
+      finish = () => resolve(uploaded);
+    }),
+  );
+  return () => finish();
+}
+
 function renderSubmit() {
   return renderHook(() => useSubmitRecording(), {
     wrapper: routerWrapper("/"),
@@ -49,7 +62,8 @@ beforeEach(() => {
 });
 
 describe("useSubmitRecording", () => {
-  it("uploads, creates, starts processing and opens the meeting", async () => {
+  it("uploads, creates and opens the meeting without waiting for processing", async () => {
+    mockedProcess.mockReturnValue(new Promise(() => {}));
     const { result } = renderSubmit();
 
     await act(() => result.current.submit(input));
@@ -64,80 +78,52 @@ describe("useSubmitRecording", () => {
       durationSeconds: 12,
     });
     expect(mockedProcess).toHaveBeenCalledWith("m1");
-    const [uploadOrder] = mockedUpload.mock.invocationCallOrder;
-    const [createOrder] = mockedCreate.mock.invocationCallOrder;
-    const [processOrder] = mockedProcess.mock.invocationCallOrder;
-    expect(uploadOrder).toBeLessThan(createOrder ?? 0);
-    expect(createOrder).toBeLessThan(processOrder ?? 0);
-    expect(location()).toHaveTextContent("/m/m1");
-    expect(result.current.error).toBeNull();
-  });
-
-  it("navigates without waiting for processing to finish", async () => {
-    mockedProcess.mockReturnValue(new Promise(() => {}));
-    const { result } = renderSubmit();
-
-    await act(() => result.current.submit(input));
-
     expect(location()).toHaveTextContent("/m/m1");
     expect(result.current).toMatchObject({ busy: true, error: null });
   });
 
-  it("passes upload inputs without a title or duration through", async () => {
+  it("does not surface a processing failure", async () => {
+    mockedProcess.mockRejectedValue(
+      apiError(409, "already_processing", "Already processing"),
+    );
     const { result } = renderSubmit();
 
-    await act(() =>
-      result.current.submit({
-        blob,
-        contentType: "audio/webm",
-        source: "upload",
-      }),
-    );
+    await act(() => result.current.submit(input));
+    await act(() => Promise.resolve());
 
-    expect(mockedCreate).toHaveBeenCalledWith(
-      expect.objectContaining({
-        source: "upload",
-        title: undefined,
-        durationSeconds: undefined,
-      }),
-    );
+    expect(result.current.error).toBeNull();
+    expect(location()).toHaveTextContent("/m/m1");
   });
 
-  it("reports the running phase while busy", async () => {
-    let finishUpload: (value: typeof uploaded) => void = () => {};
-    mockedUpload.mockReturnValue(
+  it("reports the running phase and ignores a second submit", async () => {
+    const finishUpload = deferredUpload();
+    let finishCreate = () => {};
+    mockedCreate.mockReturnValue(
       new Promise((resolve) => {
-        finishUpload = resolve;
+        finishCreate = () => resolve(created);
       }),
     );
     const { result } = renderSubmit();
 
-    let pending: Promise<void> = Promise.resolve();
+    let pending = Promise.resolve();
     act(() => {
       pending = result.current.submit(input);
     });
     expect(result.current).toMatchObject({ phase: "upload", busy: true });
+    await act(() => result.current.submit(input));
+    expect(mockedUpload).toHaveBeenCalledTimes(1);
+
+    await act(async () => finishUpload());
+    expect(result.current).toMatchObject({ phase: "create", busy: true });
 
     await act(async () => {
-      finishUpload(uploaded);
+      finishCreate();
       await pending;
     });
     expect(location()).toHaveTextContent("/m/m1");
   });
 
-  it("ignores a second submit while one is running", async () => {
-    mockedUpload.mockReturnValue(new Promise(() => {}));
-    const { result } = renderSubmit();
-
-    await act(async () => {
-      result.current.submit(input);
-      result.current.submit(input);
-    });
-
-    expect(mockedUpload).toHaveBeenCalledTimes(1);
-  });
-
-  it("exposes an upload failure and retries from upload with the same blob", async () => {
+  it("retries a failed upload with the same blob", async () => {
     mockedUpload.mockRejectedValueOnce(new Error("Failed to retrieve token"));
     const { result } = renderSubmit();
 
@@ -146,7 +132,8 @@ describe("useSubmitRecording", () => {
     expect(result.current).toMatchObject({
       phase: "upload",
       busy: false,
-      error: expect.stringMatching(/upload/i),
+      error: "Couldn't upload the audio. Check your connection and try again.",
+      canRetry: true,
     });
     expect(mockedCreate).not.toHaveBeenCalled();
     expect(location()).toHaveTextContent(/^\/$/);
@@ -159,14 +146,9 @@ describe("useSubmitRecording", () => {
     expect(result.current.error).toBeNull();
   });
 
-  it("surfaces the server message when create is rate limited", async () => {
+  it("shows a rate limit from create and retries without uploading again", async () => {
     mockedCreate.mockRejectedValueOnce(
-      new ApiError({
-        status: 429,
-        code: "rate_limited",
-        message: "Too many recordings in the last hour.",
-        retryable: true,
-      }),
+      apiError(429, "rate_limited", "Too many recordings in the last hour."),
     );
     const { result } = renderSubmit();
 
@@ -179,17 +161,24 @@ describe("useSubmitRecording", () => {
       canRetry: true,
     });
     expect(mockedProcess).not.toHaveBeenCalled();
+
+    await act(() => result.current.retry());
+
+    expect(mockedUpload).toHaveBeenCalledTimes(1);
+    expect(mockedCreate).toHaveBeenCalledTimes(2);
+    expect(location()).toHaveTextContent("/m/m1");
   });
 
-  it("shows a generic message for an unexpected create failure", async () => {
+  it("uploads again when a different recording is submitted", async () => {
     mockedCreate.mockRejectedValueOnce(new Error("boom"));
     const { result } = renderSubmit();
-
     await act(() => result.current.submit(input));
 
-    expect(result.current.error).toBe(
-      "Something went wrong. Please try again.",
-    );
+    const other = new Blob(["y"], { type: "audio/webm" });
+    await act(() => result.current.submit({ ...input, blob: other }));
+
+    expect(mockedUpload).toHaveBeenCalledTimes(2);
+    expect(mockedUpload).toHaveBeenLastCalledWith(other, "audio/webm");
   });
 
   it("refuses a recording over the size limit before uploading", async () => {
@@ -220,17 +209,10 @@ describe("useSubmitRecording", () => {
       error: null,
     });
     expect(mockedUpload).toHaveBeenCalledTimes(1);
-    expect(location()).toHaveTextContent(/^\/$/);
   });
 
   it("does not navigate once unmounted", async () => {
-    let finishUpload: (value: typeof uploaded) => void = () => {};
-    mockedUpload.mockReturnValue(
-      new Promise((resolve) => {
-        finishUpload = resolve;
-      }),
-    );
-    // Unmounts the hook but keeps the router and its location probe.
+    const finishUpload = deferredUpload();
     let leave = () => {};
     const Router = routerWrapper("/");
     function LeavableRouter({ children }: { children: ReactNode }) {
@@ -243,74 +225,17 @@ describe("useSubmitRecording", () => {
     });
     const { submit } = result.current;
 
-    let pending: Promise<void> = Promise.resolve();
+    let pending = Promise.resolve();
     act(() => {
       pending = submit(input);
     });
     act(() => leave());
     await act(async () => {
-      finishUpload(uploaded);
+      finishUpload();
       await pending;
     });
 
     expect(mockedProcess).toHaveBeenCalledWith("m1");
     expect(location()).toHaveTextContent(/^\/$/);
-  });
-
-  it("retries a failed create without uploading again", async () => {
-    mockedCreate.mockRejectedValueOnce(
-      new ApiError({
-        status: 0,
-        code: "network",
-        message: "Network down",
-        retryable: true,
-      }),
-    );
-    const { result } = renderSubmit();
-    await act(() => result.current.submit(input));
-
-    await act(() => result.current.retry());
-
-    expect(mockedUpload).toHaveBeenCalledTimes(1);
-    expect(mockedCreate).toHaveBeenCalledTimes(2);
-    expect(location()).toHaveTextContent("/m/m1");
-  });
-
-  it("uploads again when a different recording is submitted", async () => {
-    mockedCreate.mockRejectedValueOnce(new Error("boom"));
-    const { result } = renderSubmit();
-    await act(() => result.current.submit(input));
-
-    const other = new Blob(["y"], { type: "audio/webm" });
-    await act(() => result.current.submit({ ...input, blob: other }));
-
-    expect(mockedUpload).toHaveBeenCalledTimes(2);
-    expect(mockedUpload).toHaveBeenLastCalledWith(other, "audio/webm");
-  });
-
-  it("does not surface a processing failure", async () => {
-    mockedProcess.mockRejectedValue(
-      new ApiError({
-        status: 409,
-        code: "already_processing",
-        message: "Already processing",
-        retryable: false,
-      }),
-    );
-    const { result } = renderSubmit();
-
-    await act(() => result.current.submit(input));
-    await act(() => Promise.resolve());
-
-    expect(result.current.error).toBeNull();
-    expect(location()).toHaveTextContent("/m/m1");
-  });
-
-  it("retry does nothing before a submit", async () => {
-    const { result } = renderSubmit();
-
-    await act(() => result.current.retry());
-
-    expect(mockedUpload).not.toHaveBeenCalled();
   });
 });

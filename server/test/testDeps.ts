@@ -19,7 +19,6 @@ export const stubTranscript: Transcript = {
   durationSeconds: 5.2,
 };
 
-// Moments sit on stubTranscript's segment starts, so post-processing keeps them.
 export const stubSummary: Summary = {
   title: "Release planning",
   overview: "The team agreed on the release date.",
@@ -37,14 +36,6 @@ export const stubSummary: Summary = {
         },
       ],
     },
-    {
-      heading: "Meeting notes",
-      gist: "Ana takes over the notes.",
-      startSecond: 3.5,
-      points: [
-        { text: "**Ana** owns the notes", startSecond: 3.5, details: [] },
-      ],
-    },
   ],
   keyTakeaways: ["Release is on Friday"],
   decisions: ["Ship on Friday"],
@@ -54,7 +45,6 @@ export const stubSummary: Summary = {
 };
 
 export function testDeps(overrides: Partial<AppDeps> = {}): AppDeps {
-  // The repo shares the app clock so rate-limit windows and leases line up.
   const now = overrides.now ?? (() => new Date("2026-09-16T12:00:00Z"));
   return {
     repo: memoryRepo(now),

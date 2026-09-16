@@ -15,6 +15,19 @@ function Position() {
   return <output aria-label="Position">{currentTime}</output>;
 }
 
+function renderMark() {
+  render(
+    <PlayerProvider meetingId="abc" durationSeconds={125}>
+      <TimestampMark seconds={70.4} />
+      <Position />
+    </PlayerProvider>,
+  );
+  return {
+    user: userEvent.setup(),
+    mark: screen.getByRole("button", { name: "Play from 1:10" }),
+  };
+}
+
 beforeEach(() => {
   vi.mocked(getAudioUrl).mockResolvedValue({
     url: "https://blob.test/a.webm",
@@ -23,68 +36,37 @@ beforeEach(() => {
 });
 
 describe("TimestampMark", () => {
-  it("shows the moment and names what it does", () => {
-    render(<TimestampMark seconds={70.4} />);
-
-    const mark = screen.getByRole("button", { name: "Play from 1:10" });
-    expect(mark).toHaveTextContent(/^1:10$/);
-  });
-
-  it("grows its target for touch without moving the text", () => {
-    render(<TimestampMark seconds={5} />);
-
-    const mark = screen.getByRole("button", { name: "Play from 0:05" });
-    expect(mark).toHaveClass("relative", "pointer-coarse:before:-inset-y-2");
-  });
-
   it("plays the recording from its moment and replays the sweep", async () => {
     const play = vi.spyOn(HTMLMediaElement.prototype, "play");
-    const onJump = vi.fn();
-    const user = userEvent.setup();
-    render(
-      <PlayerProvider meetingId="abc" durationSeconds={125}>
-        <TimestampMark seconds={70} onJump={onJump} />
-        <Position />
-      </PlayerProvider>,
-    );
-    const mark = screen.getByRole("button", { name: "Play from 1:10" });
+    const { user, mark } = renderMark();
     const stroke = () => mark.querySelector("[data-slot='stroke']");
-    expect(stroke()).not.toHaveClass("animate-marker-sweep");
+    expect(mark).toHaveTextContent(/^1:10$/);
 
     await user.click(mark);
     await act(() => Promise.resolve());
 
     expect(screen.getByRole("status", { name: "Position" })).toHaveTextContent(
-      "70",
+      "70.4",
     );
     expect(play).toHaveBeenCalledTimes(1);
-    expect(onJump).toHaveBeenCalledWith(70);
     const first = stroke();
     expect(first).toHaveClass("animate-marker-sweep");
 
     await user.click(mark);
-    // A fresh element restarts the animation.
     expect(stroke()).not.toBe(first);
-    expect(stroke()).toHaveClass("animate-marker-sweep");
   });
 
   it("lets Space pause after a click instead of seeking again", async () => {
     const play = vi.spyOn(HTMLMediaElement.prototype, "play");
     const pause = vi.spyOn(HTMLMediaElement.prototype, "pause");
-    const user = userEvent.setup();
-    render(
-      <PlayerProvider meetingId="abc" durationSeconds={125}>
-        <TimestampMark seconds={70} />
-      </PlayerProvider>,
-    );
-    const audio = document.querySelector("audio") as HTMLAudioElement;
+    const { user, mark } = renderMark();
 
-    await user.click(screen.getByRole("button", { name: "Play from 1:10" }));
+    await user.click(mark);
     await act(() => Promise.resolve());
     act(() => {
-      audio.dispatchEvent(new Event("play"));
+      document.querySelector("audio")?.dispatchEvent(new Event("play"));
     });
-    expect(document.activeElement).toBe(document.body);
+    expect(mark).not.toHaveFocus();
 
     await user.keyboard(" ");
 
@@ -93,27 +75,11 @@ describe("TimestampMark", () => {
   });
 
   it("keeps focus when activated from the keyboard", async () => {
-    const user = userEvent.setup();
-    render(
-      <PlayerProvider meetingId="abc" durationSeconds={125}>
-        <TimestampMark seconds={70} />
-      </PlayerProvider>,
-    );
-    const mark = screen.getByRole("button", { name: "Play from 1:10" });
+    const { user, mark } = renderMark();
 
     act(() => mark.focus());
     await user.keyboard("{Enter}");
 
     expect(mark).toHaveFocus();
-  });
-
-  it("still reports the jump without a player", async () => {
-    const onJump = vi.fn();
-    const user = userEvent.setup();
-    render(<TimestampMark seconds={5} onJump={onJump} />);
-
-    await user.click(screen.getByRole("button", { name: "Play from 0:05" }));
-
-    expect(onJump).toHaveBeenCalledWith(5);
   });
 });

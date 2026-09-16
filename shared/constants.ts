@@ -1,6 +1,5 @@
 // Whisper (gateway and Groq) rejects uploads over 25 MB.
 export const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
-// At AUDIO_BITRATE an hour is ~14 MB, comfortably under MAX_AUDIO_BYTES.
 export const MAX_RECORDING_MS = 60 * 60 * 1000;
 export const RECORDING_WARN_MS = 55 * 60 * 1000;
 export const AUDIO_BITRATE = 32_000;
@@ -25,8 +24,7 @@ export const ALLOWED_AUDIO_TYPES = Object.keys(
   AUDIO_EXTENSIONS,
 ) as AllowedAudioType[];
 
-// One flat file under recordings/, matching what the client upload generates.
-// Anything looser would let a meeting point at (and delete) any blob in the store.
+// Strict, so a meeting can't point at (and delete) any other blob in the store.
 export const RECORDING_PATHNAME = /^recordings\/[\w-]{1,100}\.[a-z0-9]{1,10}$/;
 
 // MediaRecorder reports types with codec parameters, e.g. "audio/webm;codecs=opus".
@@ -34,14 +32,15 @@ export function baseType(mime: string): string {
   return mime.split(";")[0]?.trim().toLowerCase() ?? "";
 }
 
+const isKnownType = (base: string): base is AllowedAudioType =>
+  Object.hasOwn(AUDIO_EXTENSIONS, base);
+
 export function isAllowedAudioType(mime: string): boolean {
-  return Object.hasOwn(AUDIO_EXTENSIONS, baseType(mime));
+  return isKnownType(baseType(mime));
 }
 
 export function extensionFor(mime: string): string {
   const base = baseType(mime);
-  if (!Object.hasOwn(AUDIO_EXTENSIONS, base)) {
-    throw new Error(`Unsupported audio type: ${mime}`);
-  }
-  return AUDIO_EXTENSIONS[base as AllowedAudioType];
+  if (!isKnownType(base)) throw new Error(`Unsupported audio type: ${mime}`);
+  return AUDIO_EXTENSIONS[base];
 }

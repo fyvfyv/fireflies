@@ -43,27 +43,22 @@ export const SUMMARY_LIMITS = {
   detailsPerPoint: 4,
 } as const;
 
-// Seconds from the start of the recording; null when the transcript had no timestamps.
 const momentSchema = z.number().nonnegative().nullable();
 
 const notePointSchema = z.object({
-  /** May contain `**bold**` spans of a few words; no other markdown. */
   text: z.string(),
   startSecond: momentSchema,
   details: z.array(z.string()).max(SUMMARY_LIMITS.detailsPerPoint),
 });
-export type NotePoint = z.output<typeof notePointSchema>;
 
 const noteSectionSchema = z.object({
   heading: z.string(),
-  /** One sentence. */
   gist: z.string(),
   startSecond: momentSchema,
   points: z.array(notePointSchema).max(SUMMARY_LIMITS.pointsPerSection),
 });
 export type NoteSection = z.output<typeof noteSectionSchema>;
 
-// The defaults cover summaries stored before notes existed.
 const actionItemSchema = z.object({
   task: z.string(),
   owner: z.string().nullable(),
@@ -82,7 +77,7 @@ export const summarySchema = z.object({
   actionItems: z.array(actionItemSchema).max(SUMMARY_LIMITS.actionItems),
 });
 export type Summary = z.output<typeof summarySchema>;
-/** What a database row may hold: rows written before notes existed lack the defaulted fields. */
+/** Rows written before notes existed lack the defaulted fields. */
 export type StoredSummary = z.input<typeof summarySchema>;
 
 export const audioUrlSchema = z.object({
@@ -141,8 +136,6 @@ export const createMeetingInputSchema = z.object({
   contentType: z.string().refine(isAllowedAudioType, "Unsupported audio type"),
   sizeBytes: z.number().int().positive().max(MAX_AUDIO_BYTES),
   source,
-  // Only a sanity bound: the recorder caps recordings at an hour, and the
-  // provider's measured duration replaces this estimate anyway.
   durationSeconds: z
     .number()
     .nonnegative()

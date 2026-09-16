@@ -42,7 +42,6 @@ export const meetings = pgTable(
       .notNull()
       .default(false),
     sttProvider: text("stt_provider"),
-    // Rows written before notes existed lack the fields summarySchema defaults.
     summary: jsonb("summary").$type<StoredSummary>(),
     errorStep: errorStepEnum("error_step"),
     errorMessage: text("error_message"),
@@ -50,8 +49,6 @@ export const meetings = pgTable(
     attempts: integer("attempts").notNull().default(0),
     processingStartedAt: timestamptz("processing_started_at"),
     createdIpHash: text("created_ip_hash"),
-    // Deleted rows are kept (with their content wiped) so rate limits still
-    // count them; otherwise deleting would free up quota.
     deletedAt: timestamptz("deleted_at"),
     createdAt: timestamptz("created_at").notNull().defaultNow(),
     updatedAt: timestamptz("updated_at").notNull().defaultNow(),

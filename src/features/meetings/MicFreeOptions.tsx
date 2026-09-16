@@ -5,15 +5,12 @@ import type { SubmitInput } from "./useSubmitRecording";
 
 type MicFreeOptionsProps = {
   onSubmit: (input: SubmitInput) => void;
-  /** Called when the upload button rejects a file (it shows why itself). */
   onReject?: (message: string) => void;
   disabled?: boolean;
-  /** `null` drops the label where the surrounding copy already explains. */
   label?: string | null;
   className?: string;
 };
 
-/** Ways to try Recap without a microphone; stacked full width on phones. */
 export function MicFreeOptions({
   onSubmit,
   onReject,

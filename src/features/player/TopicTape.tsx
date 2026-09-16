@@ -15,15 +15,13 @@ import { percentOf, spanAt, type TapeSpan, tapeSpans } from "./tape";
 
 type TopicTapeProps = {
   sections: readonly Pick<NoteSection, "heading" | "startSecond">[];
-  actionItems?: readonly Pick<ActionItem, "startSecond">[];
-  /** The time being dragged to, null when not dragging. */
-  onScrub?: (seconds: number | null) => void;
+  actionItems: readonly Pick<ActionItem, "startSecond">[];
+  onScrub: (seconds: number | null) => void;
   className?: string;
 };
 
 const pct = (value: number) => `${value}%`;
 
-// Spans are separated by a 2px gap taken from the end of each one.
 function spanStyle(span: TapeSpan, duration: number) {
   const left = percentOf(span.start, duration);
   const width = percentOf(span.end, duration) - left;
@@ -33,11 +31,9 @@ function spanStyle(span: TapeSpan, duration: number) {
 function ActionTicks({
   items,
   duration,
-  className,
 }: {
   items: readonly Pick<ActionItem, "startSecond">[];
   duration: number;
-  className?: string;
 }) {
   if (duration <= 0) return null;
   return items.map((item, index) =>
@@ -49,16 +45,14 @@ function ActionTicks({
         aria-hidden="true"
         style={{ left: pct(percentOf(item.startSecond, duration)) }}
         className={tw(
-          "pointer-events-none absolute h-1.5 w-0.5 -translate-x-1/2 rounded-full bg-ink",
-          className,
+          "pointer-events-none absolute top-0.5 h-1.5 w-0.5 -translate-x-1/2 rounded-full bg-ink",
         )}
       />
     ),
   );
 }
 
-// Arrows move 5 s and Page keys 30 s: fixed steps in seconds read better than
-// radix's percentage-like steps on recordings of very different lengths.
+// Fixed steps in seconds; radix's percentage-like steps vary wildly with recording length.
 const STEP_KEYS: Record<string, number> = {
   ArrowRight: 5,
   ArrowUp: 5,
@@ -72,13 +66,9 @@ const STEP_KEYS: Record<string, number> = {
 const GLIDE =
   "[&>span:has(>[role=slider])]:transition-[left] [&>span:has(>[role=slider])]:duration-250 [&>span:has(>[role=slider])]:ease-linear";
 
-/**
- * The player's seek slider: each note section is a colored span across the
- * recording, with ticks for action-item moments above it.
- */
 export function TopicTape({
   sections,
-  actionItems = [],
+  actionItems,
   onScrub,
   className,
 }: TopicTapeProps) {
@@ -100,7 +90,7 @@ export function TopicTape({
 
   const updateScrub = (next: number | null) => {
     setScrub(next);
-    onScrub?.(next);
+    onScrub(next);
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLSpanElement>) => {
@@ -153,11 +143,7 @@ export function TopicTape({
         className,
       )}
     >
-      <ActionTicks
-        items={actionItems}
-        duration={duration}
-        className="top-0.5"
-      />
+      <ActionTicks items={actionItems} duration={duration} />
       <SliderPrimitive.Track
         data-slot="track"
         className={tw(
@@ -176,7 +162,6 @@ export function TopicTape({
           />
         ))}
         {started && duration > 0 && (
-          // Dims what hasn't played yet, so progress reads without hiding topics.
           <span
             className={tw(
               "absolute inset-y-0 right-0 bg-sheet/55",
@@ -192,8 +177,7 @@ export function TopicTape({
         aria-label="Seek"
         aria-valuetext={valueText}
         aria-disabled={disabled || undefined}
-        // Zero width, so radix doesn't shift it inwards at the ends and the
-        // needle lines up with the topic spans.
+        // Zero width, so radix doesn't shift it inward at the ends and the needle lines up with the spans.
         className={tw("group/thumb block h-6 w-0 outline-none")}
       >
         <span
@@ -216,7 +200,6 @@ export function TopicTape({
           data-slot="hover-preview"
           style={{
             left: pct(hoverPercent),
-            // Keeps the label inside the tape at both ends.
             transform: `translateX(-${hoverPercent}%)`,
           }}
           className={tw(

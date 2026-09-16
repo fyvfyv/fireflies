@@ -8,3 +8,5 @@ docs/memos/
 coverage
 *.local
 .env*.local
+docs/plans/
+docs/specs/

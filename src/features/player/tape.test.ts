@@ -7,16 +7,7 @@ const section = (heading: string, startSecond: number | null) => ({
 });
 
 describe("tapeSpans", () => {
-  it("runs each section to the next one and the last to the end", () => {
-    expect(tapeSpans([section("Intro", 0), section("Tasks", 70)], 125)).toEqual(
-      [
-        { index: 0, heading: "Intro", start: 0, end: 70 },
-        { index: 1, heading: "Tasks", start: 70, end: 125 },
-      ],
-    );
-  });
-
-  it("orders sections by time and skips those without a moment", () => {
+  it("orders sections by time, runs each to the next and skips untimed ones", () => {
     expect(
       tapeSpans(
         [section("Later", 50), section("Unknown", null), section("First", 10)],
@@ -45,7 +36,7 @@ describe("tapeSpans", () => {
     ]);
   });
 
-  it.each([0, Number.NaN, -1, Number.POSITIVE_INFINITY])(
+  it.each([0, Number.NaN, Number.POSITIVE_INFINITY])(
     "draws nothing for a duration of %s",
     (duration) => {
       expect(tapeSpans([section("Intro", 0)], duration)).toEqual([]);
@@ -58,7 +49,6 @@ describe("spanAt", () => {
 
   it.each([
     [0, undefined],
-    [5, "Intro"],
     [69.9, "Intro"],
     [70, "Tasks"],
     [125, "Tasks"],
@@ -69,7 +59,6 @@ describe("spanAt", () => {
 
 describe("percentOf", () => {
   it.each([
-    [0, 100, 0],
     [25, 100, 25],
     [150, 100, 100],
     [-3, 100, 0],

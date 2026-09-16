@@ -39,8 +39,7 @@ export async function summarizeTranscript(
 ): Promise<SummaryResult> {
   const { prompt, truncated } = buildSummaryPrompt(input);
   try {
-    // `output` is a getter that throws when the model produced nothing, so it
-    // must be read inside the try.
+    // `output` is a getter that throws when the model produced nothing, so read it inside the try.
     const { output, response } = await generateWithRepair(prompt, models);
     return {
       summary: finalizeSummary(output, input.segments),

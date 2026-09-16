@@ -4,26 +4,23 @@ import { createAudioAnalyser } from "./audioAnalyser";
 function fakeAudioContext() {
   const node = () => ({ connect: vi.fn(), disconnect: vi.fn() });
   const source = node();
-  const analyser = {
-    ...node(),
-    fftSize: 2048,
-    smoothingTimeConstant: 0,
-    getFloatTimeDomainData: vi.fn(),
-  };
+  const analyser = { ...node(), fftSize: 2048, smoothingTimeConstant: 0 };
   const mute = { ...node(), gain: { value: 1 } };
   const context = {
-    destination: { kind: "destination" },
+    destination: {},
     createMediaStreamSource: vi.fn(() => source),
-    createAnalyser: vi.fn(() => analyser),
-    createGain: vi.fn(() => mute),
+    createAnalyser: () => analyser,
+    createGain: () => mute,
     resume: vi.fn(async () => {}),
     close: vi.fn(async () => {}),
   };
-  const Ctor = vi.fn(function AudioContext() {
-    return context;
-  });
-  vi.stubGlobal("AudioContext", Ctor);
-  return { Ctor, context, source, analyser, mute };
+  vi.stubGlobal(
+    "AudioContext",
+    vi.fn(function AudioContext() {
+      return context;
+    }),
+  );
+  return { context, source, analyser, mute };
 }
 
 const stream = {} as MediaStream;
@@ -33,32 +30,32 @@ describe("createAudioAnalyser", () => {
     expect(createAudioAnalyser(stream)).toBeNull();
   });
 
-  it("analyses the stream with a small, smoothed FFT", () => {
+  it("is null when the AudioContext can't be created", () => {
+    vi.stubGlobal(
+      "AudioContext",
+      vi.fn(function AudioContext() {
+        throw new DOMException("x", "NotSupportedError");
+      }),
+    );
+    expect(createAudioAnalyser(stream)).toBeNull();
+  });
+
+  it("taps the stream through a muted graph that keeps running", () => {
     const audio = fakeAudioContext();
 
     const handle = createAudioAnalyser(stream);
 
+    expect(handle?.analyser).toBe(audio.analyser);
+    expect(audio.analyser).toMatchObject({
+      fftSize: 256,
+      smoothingTimeConstant: 0.8,
+    });
     expect(audio.context.createMediaStreamSource).toHaveBeenCalledWith(stream);
     expect(audio.source.connect).toHaveBeenCalledWith(audio.analyser);
-    expect(handle?.analyser).toBe(audio.analyser);
-    expect(audio.analyser.fftSize).toBe(256);
-    expect(audio.analyser.smoothingTimeConstant).toBe(0.8);
-  });
-
-  it("keeps the graph running without playing the mic back", () => {
-    const audio = fakeAudioContext();
-
-    createAudioAnalyser(stream);
-
     expect(audio.analyser.connect).toHaveBeenCalledWith(audio.mute);
     expect(audio.mute.gain.value).toBe(0);
     expect(audio.mute.connect).toHaveBeenCalledWith(audio.context.destination);
     expect(audio.context.resume).toHaveBeenCalled();
-  });
-
-  it("disconnects and closes the context on dispose", () => {
-    const audio = fakeAudioContext();
-    const handle = createAudioAnalyser(stream);
 
     handle?.dispose();
 

@@ -1,10 +1,5 @@
 @import "tailwindcss";
 
-/*
- * Color tokens. Raw values live on :root so dark mode only swaps variables;
- * `@theme inline` below turns them into utilities (bg-paper, text-ink,
- * border-rule, bg-marker, bg-topic-1…) that follow the swap.
- */
 :root {
   color-scheme: light dark;
 
@@ -47,7 +42,6 @@
     --danger: #f0716a;
     --ok: #4fc285;
 
-    /* Same hues, HSL lightness +8%. */
     --topic-1: #a0b1f6;
     --topic-2: #f3b883;
     --topic-3: #7acbb7;
@@ -55,7 +49,6 @@
     --topic-5: #bdaae4;
     --topic-6: #afd087;
 
-    /* The light tint disappears on dark paper. */
     --float-shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.4);
   }
 }
@@ -87,11 +80,6 @@
   --font-sans:
     "Mona Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 
-  /*
-   * Type scale. `text-*` sets size, line height, weight and tracking; the
-   * matching `type-*` utility below also sets the width axis, which Tailwind's
-   * font-size tokens cannot carry.
-   */
   --text-caption: 0.75rem;
   --text-caption--line-height: 1rem;
   --text-caption--font-weight: 450;
@@ -122,13 +110,11 @@
   --radius-sheet: 1rem;
   --radius-control: 0.625rem;
   --radius-chip: 999px;
-  /* Timestamp marks are highlighter strokes, not pills. */
   --radius-mark: 0.25rem;
 
   --ease-out-soft: cubic-bezier(0.2, 0.7, 0.2, 1);
 
   --animate-marker-sweep: marker-sweep 450ms var(--ease-out-soft);
-  /* Set --i on each section to stagger it (60ms steps, capped at 8). */
   --animate-reveal: reveal 380ms var(--ease-out-soft)
     calc(min(var(--i, 0), 8) * 60ms) both;
   --animate-shimmer: shimmer 1.4s linear infinite;
@@ -182,11 +168,7 @@
   }
 }
 
-/*
- * Composite type styles. Line height, weight and tracking read the same
- * --tw-* variables as Tailwind's own utilities, so `type-title font-medium`
- * or `type-display leading-none` still refine them.
- */
+/* Reads --tw-* like Tailwind's utilities, so `type-title font-medium` still refines it. */
 @utility type-caption {
   font-size: var(--text-caption);
   line-height: var(--tw-leading, var(--text-caption--line-height));
@@ -230,7 +212,6 @@
   font-stretch: 112%;
 }
 
-/* Display and timer sizes shrink on mobile through the tokens (below). */
 @utility type-display {
   font-size: var(--text-display);
   line-height: var(--tw-leading, var(--text-display--line-height));
@@ -247,15 +228,9 @@
   font-stretch: 125%;
 }
 
-/*
- * Mobile display and timer sizes. Overriding the tokens, not the utilities,
- * keeps `text-display` and `text-timer` in step with the `type-*` styles.
- * Unlayered, so it beats the @theme values.
- */
 @media (width < 48rem) {
   :root {
-    /* Scales with the viewport so "Record the meeting." stays on one line
-       down to 360px instead of orphaning "meeting.". */
+    /* 8.6vw keeps "Record the meeting." on one line down to 360px. */
     --text-display: clamp(1.875rem, 8.6vw, 2.375rem);
     --text-display--line-height: 1.1;
     --text-timer: 3rem;
@@ -263,24 +238,18 @@
   }
 }
 
-/*
- * Highlighter stroke. Drawn as a background image rather than a background
- * color so `animate-marker-sweep` (and --marker-fill changes) can grow it
- * from the left; `clone` keeps the stroke on every line of wrapped text.
- */
+/* An image, not a color, so marker-sweep can grow it; `clone` repeats it per wrapped line. */
 @utility marker {
   color: var(--marker-ink);
   background-image: linear-gradient(var(--marker), var(--marker));
   background-repeat: no-repeat;
   background-position: left center;
-  background-size: var(--marker-fill, 100%) 100%;
+  background-size: 100% 100%;
   border-radius: var(--radius-mark);
   -webkit-box-decoration-break: clone;
   box-decoration-break: clone;
-  transition: background-size 450ms var(--ease-out-soft);
 }
 
-/* Skeleton surface; animate-shimmer moves the sheen across it. */
 @utility skeleton {
   background-color: var(--sunken);
   background-image: linear-gradient(
@@ -299,8 +268,7 @@
     -webkit-tap-highlight-color: transparent;
   }
 
-  /* Tailwind v4 borders default to currentColor; here a bare `border` is a
-     hairline. */
+  /* Tailwind v4 borders default to currentColor. */
   *,
   ::before,
   ::after,
@@ -332,8 +300,7 @@
     color: var(--marker-ink);
   }
 
-  /* The placeholder is the only visible label of the search fields and the
-     default recording title, so it needs text contrast; faint is ~3:1. */
+  /* Some fields' only visible label, so it needs text contrast; faint is ~3:1. */
   ::placeholder {
     color: var(--graphite);
   }
@@ -350,13 +317,7 @@
   }
 }
 
-/*
- * Reduced motion: decorative animations and transitions stop. Spinners keep
- * turning because they are the only sign that something is still working.
- * Every animate-* utility reads its --animate-* token, so emptying the tokens
- * also stops variant forms such as md:animate-reveal. Unlayered, so these
- * rules beat the theme and utilities without !important.
- */
+/* Emptying the tokens also stops variants such as md:animate-reveal. */
 @media (prefers-reduced-motion: reduce) {
   :root {
     --animate-marker-sweep: none;
@@ -365,9 +326,6 @@
     --animate-rec-pulse: none;
     --animate-toast-in: none;
     --animate-toast-out: none;
-    --animate-pulse: none;
-    --animate-ping: none;
-    --animate-bounce: none;
   }
 
   *,

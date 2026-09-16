@@ -10,7 +10,11 @@ import type {
 } from "../../shared/schemas.js";
 import { canProcess, isInProgress, nextStep } from "../../shared/status.js";
 import type { AppDeps } from "../deps.js";
-import { HttpError, meetingNotFound } from "../http/errors.js";
+import {
+  alreadyProcessing,
+  HttpError,
+  meetingNotFound,
+} from "../http/errors.js";
 import type { MeetingPatch, MeetingRepo, MeetingRow } from "../repo/types.js";
 import { SttError } from "../services/stt/types.js";
 import { SummaryError } from "../services/types.js";
@@ -41,13 +45,10 @@ const GENERIC_ERRORS: Record<ErrorStep, string> = {
 // Whitespace splitting would count a whole CJK transcript as one word.
 const wordSegmenter = new Intl.Segmenter(undefined, { granularity: "word" });
 
+type Run = { deps: AppDeps; lease: Date };
+
 type StepResult = { row: MeetingRow; details: object };
 
-/**
- * Runs the steps the meeting is still missing, under its lease, and resolves
- * with the final row (`done` or `failed`). Throws when it refuses to start, or
- * when the meeting is deleted or taken over mid-run.
- */
 export async function processMeeting(
   deps: AppDeps,
   id: string,
@@ -64,8 +65,7 @@ export async function processMeeting(
   if (!claimed) throw alreadyProcessing();
   const run: Run = { deps, lease };
 
-  // A run killed at the function time limit never records its failure, so the
-  // takeover counts it; otherwise a stalled meeting could be retried forever.
+  // A run killed at the time limit never records its failure, so the takeover counts it.
   let row = isInProgress(claimed.status)
     ? await save(run, id, { attempts: claimed.attempts + 1 })
     : claimed;
@@ -85,20 +85,6 @@ export async function processMeeting(
   return released;
 }
 
-// Every write of a run is guarded by the lease it took, so a run that
-// outlived its lease can't clobber the run that took it over.
-type Run = { deps: AppDeps; lease: Date };
-
-export function alreadyProcessing() {
-  return new HttpError(
-    409,
-    "already_processing",
-    "Meeting is already being processed",
-    false,
-  );
-}
-
-// Someone else changed the meeting under us: busy if it still exists.
 export async function leaseLost(repo: MeetingRepo, id: string) {
   return (await repo.get(id)) ? alreadyProcessing() : meetingNotFound();
 }
@@ -148,10 +134,7 @@ async function transcribe(run: Run, row: MeetingRow): Promise<StepResult> {
     transcriptSegments: transcript.segments,
     language: transcript.language ?? null,
     sttProvider: deps.stt.name,
-    // The recorder's estimate stands unless the provider measured the audio.
-    ...(transcript.durationSeconds === undefined
-      ? {}
-      : { durationSeconds: transcript.durationSeconds }),
+    durationSeconds: transcript.durationSeconds ?? row.durationSeconds,
   });
   return {
     row: saved,
@@ -162,7 +145,6 @@ async function transcribe(run: Run, row: MeetingRow): Promise<StepResult> {
 async function summarize(run: Run, row: MeetingRow): Promise<StepResult> {
   const { deps } = run;
   const text = row.transcriptText ?? "";
-  // Too little speech to summarize: skip the LLM rather than let it invent content.
   if (!hasWords(text, MIN_TRANSCRIPT_WORDS)) {
     const saved = await save(run, row.id, donePatch(row, EMPTY_SUMMARY));
     return { row: saved, details: { placeholder: true } };
@@ -179,8 +161,6 @@ async function summarize(run: Run, row: MeetingRow): Promise<StepResult> {
   return { row: saved, details: { model, truncated } };
 }
 
-// Every status a run writes clears the previous run's error, so a row never
-// shows progress next to a stale failure.
 function withStatus(status: MeetingStatus): MeetingPatch {
   return { status, errorStep: null, errorMessage: null, errorRetryable: null };
 }
@@ -212,7 +192,6 @@ export function hasWords(text: string, min: number): boolean {
   return false;
 }
 
-// Logs keep the raw provider error that the stored message deliberately hides.
 function errorFields(err: unknown) {
   if (!(err instanceof Error)) return { error: String(err) };
   const { cause } = err;
@@ -222,8 +201,7 @@ function errorFields(err: unknown) {
   };
 }
 
-// Only our own error types carry messages written for users; anything else
-// may contain provider payloads, so it is replaced with a generic string.
+// Only our own errors carry user-safe messages; others may contain provider payloads.
 function failurePatch(
   err: unknown,
   step: ErrorStep,

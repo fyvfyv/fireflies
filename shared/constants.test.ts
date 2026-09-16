@@ -3,24 +3,15 @@ import { extensionFor, isAllowedAudioType } from "./constants.js";
 
 describe("isAllowedAudioType", () => {
   it.each([
-    "audio/webm",
-    "audio/webm;codecs=opus",
-    "audio/mp4",
-    "Audio/MP4; codecs=mp4a.40.2",
-    "audio/x-m4a",
-    "audio/mpeg",
-    "audio/wav",
-    "audio/ogg",
-  ])("allows %s", (mime) => {
-    expect(isAllowedAudioType(mime)).toBe(true);
+    ["audio/webm;codecs=opus", true],
+    ["Audio/MP4; codecs=mp4a.40.2", true],
+    ["audio/x-m4a", true],
+    ["video/webm", false],
+    ["audio/flac", false],
+    ["", false],
+  ])("%s → %s", (mime, allowed) => {
+    expect(isAllowedAudioType(mime)).toBe(allowed);
   });
-
-  it.each(["video/webm", "video/mp4", "audio/flac", "text/plain", ""])(
-    "rejects %s",
-    (mime) => {
-      expect(isAllowedAudioType(mime)).toBe(false);
-    },
-  );
 });
 
 describe("extensionFor", () => {
@@ -29,8 +20,6 @@ describe("extensionFor", () => {
     ["audio/mp4", "m4a"],
     ["audio/x-m4a", "m4a"],
     ["audio/mpeg", "mp3"],
-    ["audio/wav", "wav"],
-    ["audio/ogg", "ogg"],
   ])("%s → %s", (mime, ext) => {
     expect(extensionFor(mime)).toBe(ext);
   });

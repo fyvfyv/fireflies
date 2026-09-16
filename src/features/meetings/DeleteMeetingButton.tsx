@@ -1,7 +1,7 @@
 import { tw } from "@tw";
 import { Trash2 } from "lucide-react";
 import { type ComponentProps, useId } from "react";
-import { Button, type ButtonVariant } from "@/components/ui/Button";
+import { Button } from "@/components/ui/Button";
 import {
   Popover,
   PopoverClose,
@@ -12,25 +12,17 @@ import {
 type ConfirmProps = {
   onConfirm: () => void;
   deleting?: boolean;
-  /** Why the last attempt failed; the panel stays open to show it. */
   error?: string | null;
 };
 
-type DeleteMeetingButtonProps = ConfirmProps & {
-  label?: string;
-  variant?: ButtonVariant;
-};
-
-/** A button that asks in a small popover before deleting the meeting. */
 export function DeleteMeetingButton({
-  label = "Delete meeting",
-  variant = "secondary",
+  label,
   ...confirm
-}: DeleteMeetingButtonProps) {
+}: ConfirmProps & { label: string }) {
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button variant={variant}>
+        <Button variant="secondary">
           <Trash2 aria-hidden="true" />
           {label}
         </Button>
@@ -43,10 +35,6 @@ export function DeleteMeetingButton({
 type ContentProps = ConfirmProps &
   Omit<ComponentProps<typeof PopoverContent>, "children" | "onError">;
 
-/**
- * The confirmation panel, for any Popover. The meeting page opens it from its
- * overflow menu, so it isn't tied to a trigger button.
- */
 export function DeleteConfirmContent({
   onConfirm,
   deleting = false,
@@ -61,7 +49,6 @@ export function DeleteConfirmContent({
       aria-labelledby={titleId}
       aria-describedby={descriptionId}
       className={tw("space-y-3", className)}
-      // Deleting can't be interrupted; keep the panel until it finishes.
       onEscapeKeyDown={(event) => deleting && event.preventDefault()}
       onPointerDownOutside={(event) => deleting && event.preventDefault()}
       {...props}

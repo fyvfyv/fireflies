@@ -1,10 +1,7 @@
 import { type ClassValue, clsx } from "clsx";
 import { extendTailwindMerge } from "tailwind-merge";
 
-// Mirrors the custom tokens in index.css. tailwind-merge only knows Tailwind's
-// default scales: without this it reads `text-caption` as a color,
-// `shadow-float` as a shadow color and ignores `rounded-sheet`, so conflicting
-// classes would both survive and the stylesheet order would pick the winner.
+// tailwind-merge only knows default scales; unlisted, `text-caption` reads as a color.
 const typeScale = [
   "caption",
   "small",
@@ -55,8 +52,6 @@ const twMerge = extendTailwindMerge<"type">({
       ],
     },
     classGroups: {
-      // `type-*` (index.css) sets size, line height, weight, width and
-      // tracking at once.
       type: [{ type: typeScale }],
     },
     conflictingClassGroups: {

@@ -1,5 +1,3 @@
-// Mimics the MediaRecorder surface useRecorder relies on: stop() flushes one
-// dataavailable chunk, then fires stop, like browsers do.
 export class FakeMediaRecorder extends EventTarget {
   static isTypeSupported = (type: string): boolean =>
     type === "audio/webm;codecs=opus";
@@ -15,7 +13,7 @@ export class FakeMediaRecorder extends EventTarget {
     FakeMediaRecorder.latest = this;
   }
 
-  start(_timeslice?: number) {
+  start() {
     this.state = "recording";
   }
 

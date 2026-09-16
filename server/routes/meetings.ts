@@ -16,8 +16,6 @@ import { processMeeting } from "../pipeline/processMeeting.js";
 import { regenerateNotes } from "../pipeline/regenerateNotes.js";
 import type { MeetingRow } from "../repo/types.js";
 
-// Fills what summaries stored before notes existed lack, the way the schema's
-// defaults would, without re-validating data that was valid when written.
 function withSummaryDefaults(summary: StoredSummary): Summary {
   return {
     ...summary,
@@ -51,7 +49,6 @@ function toMeeting(row: MeetingRow, now: Date): Meeting {
   };
 }
 
-// Replaced by the LLM title after summarizing, unless the user typed one.
 function defaultTitle(now: Date): string {
   return `Recording ${now.toISOString().slice(0, 16).replace("T", " ")} UTC`;
 }
@@ -122,7 +119,6 @@ export function meetingsRoutes(deps: AppDeps) {
       const id = c.req.param("id");
       const row = await repo.get(id);
       if (!row || !(await repo.delete(id))) throw meetingNotFound();
-      // Best effort: an orphaned blob is cheaper than a meeting that can't be deleted.
       await storage.delete(row.audioPathname).catch((err: unknown) => {
         log({
           level: "warn",

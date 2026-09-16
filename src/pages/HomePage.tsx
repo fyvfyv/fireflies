@@ -16,32 +16,26 @@ import {
   useSubmitRecording,
 } from "@/features/meetings/useSubmitRecording";
 import { RecorderCard } from "@/features/recorder/RecorderCard";
-import { type Recorder, useRecorder } from "@/features/recorder/useRecorder";
+import { useRecorder } from "@/features/recorder/useRecorder";
 import { errorMessage, listMeetings } from "@/lib/api";
 
 const LIST_POLL_MS = 5_000;
-
-type ListState = {
-  meetings: MeetingListItem[] | null;
-  error: string | null;
-};
 
 // An `uploaded` row only moves once someone opens it, so it isn't polled.
 const isProcessing = (m: MeetingListItem) =>
   isInProgress(m.status) && !m.stalled;
 
 function useMeetingList() {
-  const [state, setState] = useState<ListState>({
-    meetings: null,
-    error: null,
-  });
+  const [state, setState] = useState<{
+    meetings: MeetingListItem[] | null;
+    error: string | null;
+  }>({ meetings: null, error: null });
 
   const load = useCallback(async () => {
     try {
       const meetings = await listMeetings();
       setState({ meetings, error: null });
     } catch (err) {
-      // Keep the last rows on screen; a failed refetch is usually transient.
       setState((prev) => ({ ...prev, error: errorMessage(err) }));
     }
   }, []);
@@ -50,8 +44,6 @@ function useMeetingList() {
     load();
   }, [load]);
 
-  // Every load replaces `state`, so this re-arms after each response and never
-  // stacks requests behind a slow one the way setInterval would.
   useEffect(() => {
     if (!state.meetings?.some(isProcessing)) return;
     const timer = setTimeout(load, LIST_POLL_MS);
@@ -68,10 +60,17 @@ const phaseLabels: Record<SubmitPhase, string> = {
 
 const LEAVE_PROMPT = "Leave this page? The recording hasn't been saved.";
 
-// In-app links would unmount the recorder and silently drop the audio;
-// the recorder's beforeunload guard only covers closing or reloading the tab.
-function useLeaveGuard(shouldBlock: BlockerFunction) {
-  const blocker = useBlocker(shouldBlock);
+// beforeunload only covers tab close/reload; in-app links would unmount the recorder.
+function useLeaveGuard(
+  unsaved: boolean,
+  isOwnNavigation: (pathname: string) => boolean,
+) {
+  const blocker = useBlocker(
+    useCallback<BlockerFunction>(
+      ({ nextLocation }) => unsaved && !isOwnNavigation(nextLocation.pathname),
+      [unsaved, isOwnNavigation],
+    ),
+  );
   useEffect(() => {
     if (blocker.state !== "blocked") return;
     if (window.confirm(LEAVE_PROMPT)) blocker.proceed();
@@ -84,58 +83,40 @@ export function HomePage() {
   const { meetings, error, reload } = useMeetingList();
   const recorder = useRecorder();
   const submission = useSubmitRecording();
-  // A dropped file that failed validation; a picker shows its own, next to
-  // its button.
   const [dropError, setDropError] = useState<string | null>(null);
   const { state } = recorder;
+  const idle = state === "idle";
   const unsaved = state === "recording" || state === "stopped";
-  const { isOwnNavigation, clear, submit: runSubmit } = submission;
-  // Only the save's own move to the new meeting skips the prompt: leaving
-  // mid-save would drop the recording, and a failure with it.
-  useLeaveGuard(
-    useCallback<BlockerFunction>(
-      ({ nextLocation }) => unsaved && !isOwnNavigation(nextLocation.pathname),
-      [unsaved, isOwnNavigation],
-    ),
-  );
+  useLeaveGuard(unsaved, submission.isOwnNavigation);
 
-  const submit = useCallback(
-    (input: SubmitInput) => {
-      setDropError(null);
-      runSubmit(input);
-    },
-    [runSubmit],
-  );
-  // A failed file or sample save's Retry, or a stale drop message, would
-  // otherwise linger next to a new recording or a newer file problem.
-  const forgetFeedback = useCallback(() => {
+  const submit = (input: SubmitInput) => {
     setDropError(null);
-    clear();
-  }, [clear]);
-  // The feedback slot shows a save error in preference to a drop message, so
-  // a newer bad drop has to replace the older failure to be seen at all.
-  const rejectDrop = useCallback(
-    (message: string) => {
-      forgetFeedback();
-      setDropError(message);
-    },
-    [forgetFeedback],
-  );
+    submission.submit(input);
+  };
+  const forgetFeedback = () => {
+    setDropError(null);
+    submission.clear();
+  };
+  const rejectDrop = (message: string) => {
+    submission.clear();
+    setDropError(message);
+  };
 
   const phaseLabel = submission.phase
     ? phaseLabels[submission.phase]
     : undefined;
-  const idle = state === "idle";
-  // A drop navigates away once saved, which would drop a recording that is
-  // starting, running or waiting to be saved.
-  const dropDisabled = submission.busy || holdsMicrophone(state);
+  const micFreeProps = {
+    onSubmit: submit,
+    onReject: forgetFeedback,
+    disabled: submission.busy,
+  };
 
   return (
     <div className={tw("mx-auto max-w-[1120px] px-4 md:px-8")}>
       <DropZone
         onSubmit={submit}
         onReject={rejectDrop}
-        disabled={dropDisabled}
+        disabled={submission.busy || state === "requesting" || unsaved}
       />
       <div className={tw("pt-10 pb-12 md:pt-16 md:pb-16")}>
         <Hero
@@ -164,9 +145,7 @@ export function HomePage() {
               ) : (
                 dropError && <ErrorAlert message={dropError} />
               )}
-              {/* Always mounted so screen readers announce each phase. The
-                  review form shows the phase in its button, so the line is
-                  only visible for saves started elsewhere. */}
+              {/* Always mounted so screen readers announce each phase. */}
               <p
                 role="status"
                 className={tw(
@@ -184,18 +163,7 @@ export function HomePage() {
               </p>
             </>
           }
-          // The card offers these itself when the mic is unusable, and they
-          // stay hidden mid-recording so a click can't navigate away from
-          // unsaved audio.
-          options={
-            idle && (
-              <MicFreeOptions
-                onSubmit={submit}
-                onReject={forgetFeedback}
-                disabled={submission.busy}
-              />
-            )
-          }
+          options={idle && <MicFreeOptions {...micFreeProps} />}
         />
       </div>
       <div className={tw("border-t border-rule pt-10 pb-16 md:pb-24")}>
@@ -211,22 +179,10 @@ export function HomePage() {
             )
           }
           emptyActions={
-            idle && (
-              <MicFreeOptions
-                onSubmit={submit}
-                onReject={forgetFeedback}
-                disabled={submission.busy}
-                label={null}
-              />
-            )
+            idle && <MicFreeOptions {...micFreeProps} label={null} />
           }
         />
       </div>
     </div>
   );
-}
-
-// The recorder holds the microphone, or is about to.
-function holdsMicrophone(state: Recorder["state"]): boolean {
-  return state === "requesting" || state === "recording" || state === "stopped";
 }

@@ -31,7 +31,6 @@ export type Recorder = {
   elapsed: number;
   warning: boolean;
   result: RecordingResult | null;
-  /** The microphone stream while recording, for the live waveform. */
   stream: MediaStream | null;
   start: () => Promise<void>;
   stop: () => void;
@@ -46,8 +45,7 @@ export type RecorderDeps = {
 const browserDeps: RecorderDeps = {
   getUserMedia: (constraints) =>
     navigator.mediaDevices.getUserMedia(constraints),
-  // Read on use: mediaDevices is missing outside secure contexts, which makes
-  // MediaRecorder useless there.
+  // A getter: mediaDevices is missing outside secure contexts.
   get MediaRecorderCtor() {
     return navigator.mediaDevices ? globalThis.MediaRecorder : undefined;
   },
@@ -78,8 +76,7 @@ export function useRecorder(deps: RecorderDeps = browserDeps): Recorder {
   const startingRef = useRef(false);
   const mountedRef = useRef(false);
 
-  // Detaches before stopping, so the stop event of a discarded recording is
-  // ignored instead of producing a result.
+  // Detach before stopping, so a discarded recording's stop event is ignored.
   const endSession = useCallback(() => {
     const session = sessionRef.current;
     if (!session) return;
@@ -133,7 +130,6 @@ export function useRecorder(deps: RecorderDeps = browserDeps): Recorder {
       return;
     }
 
-    // The upload and the stored content type drop codec parameters.
     const contentType = baseType(mimeType);
     const session: Session = {
       recorder,
@@ -162,7 +158,6 @@ export function useRecorder(deps: RecorderDeps = browserDeps): Recorder {
     try {
       recorder.start(1000);
     } catch {
-      // e.g. the track ended between the permission prompt and start().
       stopTracks(stream);
       setState("unavailable");
       return;
@@ -208,8 +203,7 @@ export function useRecorder(deps: RecorderDeps = browserDeps): Recorder {
     elapsed,
     warning: state === "recording" && elapsed * 1000 >= RECORDING_WARN_MS,
     result,
-    // Only a live session's tracks are worth analysing; a stopped stream is dead.
-    stream: state === "recording" ? stream : null,
+    stream,
     start,
     stop,
     reset,

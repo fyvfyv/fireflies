@@ -32,13 +32,11 @@ export function TrySampleButton({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
-  // The button unmounts when a recording starts; a sample submitted after
-  // that would navigate away from the recording.
+  // Unmounts when recording starts; a late sample would navigate away from it.
   useEffect(() => () => controllerRef.current?.abort(), []);
 
   const handleClick = async (event: MouseEvent<HTMLButtonElement>) => {
-    // The button can appear under the pointer between the two clicks of a
-    // double click on the recorder (Discard). Keyboard activation reports 0.
+    // Can appear under the second click of a Discard double click.
     if (event.detail > 1) return;
     const controller = new AbortController();
     controllerRef.current = controller;
@@ -58,7 +56,7 @@ export function TrySampleButton({
     if (controller.signal.aborted) return;
     onSubmit({
       blob,
-      // Explicit, because static hosts may serve .webm as video/webm.
+      // Static hosts may serve .webm as video/webm.
       contentType: SAMPLE_TYPE,
       source: "demo",
       title: SAMPLE_TITLE,

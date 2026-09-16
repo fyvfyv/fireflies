@@ -1,5 +1,3 @@
-// Real-credential check of the STT provider and summarizer:
-// `pnpm smoke:ai [audio file]`, reading .env.local like the dev server.
 import "../server/loadEnv.js";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -42,7 +40,7 @@ function loadConfig() {
     const env = parseEnv();
     return { env, stt: createSttProvider(env) };
   } catch (err) {
-    fail((err as Error).message);
+    fail(err instanceof Error ? err.message : String(err));
   }
 }
 const { env, stt } = loadConfig();

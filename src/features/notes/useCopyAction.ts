@@ -1,12 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useToast } from "@/components/ui/Toaster";
 
 const CONFIRM_MS = 2_000;
 
-/**
- * Runs a clipboard write and confirms it twice: a toast, and `copied` for two
- * seconds so the button can swap its icon.
- */
 export function useCopyAction(
   write: () => Promise<void>,
   messages: { success: string; failure: string },
@@ -14,8 +10,6 @@ export function useCopyAction(
   const { toast } = useToast();
   // Counts copies (null: nothing to confirm), so each copy restarts the timer.
   const [copies, setCopies] = useState<number | null>(null);
-  const latest = useRef({ write, messages });
-  latest.current = { write, messages };
 
   useEffect(() => {
     if (copies === null) return;
@@ -23,17 +17,16 @@ export function useCopyAction(
     return () => clearTimeout(timer);
   }, [copies]);
 
-  const copy = useCallback(async () => {
-    const { write: run, messages: copy } = latest.current;
+  const copy = async () => {
     try {
-      await run();
+      await write();
     } catch {
-      toast({ title: copy.failure, tone: "danger" });
+      toast({ title: messages.failure, tone: "danger" });
       return;
     }
     setCopies((count) => (count ?? 0) + 1);
-    toast({ title: copy.success });
-  }, [toast]);
+    toast({ title: messages.success });
+  };
 
   return { copied: copies !== null, copy };
 }

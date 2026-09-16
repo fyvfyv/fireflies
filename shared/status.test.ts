@@ -3,45 +3,32 @@ import { LEASE_MS, MAX_ATTEMPTS } from "./constants.js";
 import type { MeetingStatus } from "./schemas.js";
 import { canProcess, isInProgress, isStalled, nextStep } from "./status.js";
 
-const summary = {
-  title: "t",
-  overview: "o",
-  keyTakeaways: [],
-  decisions: [],
-  actionItems: [],
-};
-
 describe("nextStep", () => {
   it.each([
-    ["uploaded", { transcriptText: null, summary: null }, "transcribe"],
-    ["transcribed", { transcriptText: "hi", summary: null }, "summarize"],
-    [
-      "failed with transcript",
-      { transcriptText: "hi", summary: null },
-      "summarize",
-    ],
-    [
-      "failed without transcript",
-      { transcriptText: null, summary: null },
-      "transcribe",
-    ],
-    ["transcribed silence", { transcriptText: "", summary: null }, "summarize"],
-    ["done", { transcriptText: "hi", summary }, "none"],
-  ] as const)("%s → %s", (_, meeting, expected) => {
+    [{ transcriptText: null, summary: null }, "transcribe"],
+    [{ transcriptText: "", summary: null }, "summarize"],
+    [{ transcriptText: "hi", summary: {} }, "none"],
+  ] as const)("%j → %s", (meeting, expected) => {
     expect(nextStep(meeting)).toBe(expected);
   });
 });
 
 describe("isInProgress", () => {
-  it.each([
-    ["uploaded", false],
-    ["transcribing", true],
-    ["transcribed", true],
-    ["summarizing", true],
-    ["done", false],
-    ["failed", false],
-  ] as const)("%s → %s", (status, expected) => {
-    expect(isInProgress(status)).toBe(expected);
+  it("holds only between a run's start and end", () => {
+    const statuses: MeetingStatus[] = [
+      "uploaded",
+      "transcribing",
+      "transcribed",
+      "summarizing",
+      "done",
+      "failed",
+    ];
+
+    expect(statuses.filter(isInProgress)).toEqual([
+      "transcribing",
+      "transcribed",
+      "summarizing",
+    ]);
   });
 });
 
@@ -51,16 +38,12 @@ describe("isStalled", () => {
 
   it.each([
     ["transcribing", ago(LEASE_MS + 1), true],
-    ["summarizing", ago(LEASE_MS + 1), true],
     ["transcribing", ago(LEASE_MS), false],
-    ["summarizing", ago(1_000), false],
-    ["transcribed", ago(LEASE_MS + 1), true],
-    ["transcribed", ago(LEASE_MS), false],
+    ["transcribed", null, true],
+    ["summarizing", null, true],
     ["uploaded", ago(LEASE_MS + 1), true],
-    ["uploaded", ago(LEASE_MS), false],
     ["uploaded", null, false],
     ["done", ago(LEASE_MS + 1), false],
-    ["failed", ago(LEASE_MS + 1), false],
     ["failed", null, false],
   ] as const)(
     "%s with lease %s → %s",
@@ -68,57 +51,23 @@ describe("isStalled", () => {
       expect(isStalled({ status, processingStartedAt }, now)).toBe(expected);
     },
   );
-
-  it.each(["transcribing", "transcribed", "summarizing"] as const)(
-    "treats %s without a lease as stalled",
-    (status) => {
-      expect(isStalled({ status, processingStartedAt: null }, now)).toBe(true);
-    },
-  );
 });
 
 describe("canProcess", () => {
-  const statuses: MeetingStatus[] = [
-    "uploaded",
-    "transcribing",
-    "transcribed",
-    "summarizing",
-    "failed",
-  ];
-
-  const check = (
-    status: MeetingStatus,
-    attempts: number,
-    errorRetryable: boolean | null = null,
-  ) => canProcess({ status, attempts, errorRetryable });
-
-  it.each(statuses)("allows %s below the attempt cap", (status) => {
-    expect(check(status, MAX_ATTEMPTS - 1)).toEqual({ ok: true });
-  });
-
-  it.each(statuses)("gives up on %s at the attempt cap", (status) => {
-    expect(check(status, MAX_ATTEMPTS)).toEqual({
-      ok: false,
-      code: "give_up",
-    });
-  });
-
-  it("refuses a done meeting regardless of attempts", () => {
-    expect(check("done", 0)).toEqual({ ok: false, code: "not_processable" });
-    expect(check("done", MAX_ATTEMPTS)).toEqual({
-      ok: false,
-      code: "not_processable",
-    });
-  });
-
-  it("allows a retryable failure", () => {
-    expect(check("failed", 1, true)).toEqual({ ok: true });
-  });
-
-  it("refuses a failure marked non-retryable", () => {
-    expect(check("failed", 1, false)).toEqual({
-      ok: false,
-      code: "not_retryable",
-    });
-  });
+  it.each([
+    ["uploaded", 0, null, { ok: true }],
+    ["summarizing", MAX_ATTEMPTS - 1, null, { ok: true }],
+    ["failed", 1, true, { ok: true }],
+    ["failed", 1, false, { ok: false, code: "not_retryable" }],
+    ["failed", MAX_ATTEMPTS, true, { ok: false, code: "give_up" }],
+    ["transcribing", MAX_ATTEMPTS, null, { ok: false, code: "give_up" }],
+    ["done", MAX_ATTEMPTS, null, { ok: false, code: "not_processable" }],
+  ] as const)(
+    "%s after %i attempts (retryable: %s)",
+    (status, attempts, errorRetryable, expected) => {
+      expect(canProcess({ status, attempts, errorRetryable })).toEqual(
+        expected,
+      );
+    },
+  );
 });

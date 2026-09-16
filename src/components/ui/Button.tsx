@@ -1,7 +1,7 @@
-import { Slot, Slottable } from "@radix-ui/react-slot";
+import { Slot } from "@radix-ui/react-slot";
 import { tw } from "@tw";
 import { LucideProvider } from "lucide-react";
-import type { ComponentProps, MouseEvent } from "react";
+import type { ComponentProps } from "react";
 import { Spinner } from "./Spinner";
 
 export const buttonVariants = {
@@ -10,10 +10,9 @@ export const buttonVariants = {
   ghost: "text-graphite hover:bg-sunken hover:text-ink",
   // /90 drops white text below 4.5:1 in light mode.
   danger: "bg-danger text-sheet hover:bg-danger/95",
-  marker: "bg-marker text-marker-ink hover:bg-marker/80",
 } as const;
 
-export const buttonSizes = {
+const sizes = {
   sm: "h-8 gap-1.5 px-3 text-small",
   md: "h-10 gap-2 px-4 text-small",
   lg: "h-12 gap-2 px-5 text-body",
@@ -22,15 +21,17 @@ export const buttonSizes = {
 const iconSizes = { sm: 16, md: 18, lg: 18 } as const;
 
 export type ButtonVariant = keyof typeof buttonVariants;
-export type ButtonSize = keyof typeof buttonSizes;
 
 type ButtonProps = ComponentProps<"button"> & {
   variant?: ButtonVariant;
-  size?: ButtonSize;
-  asChild?: boolean;
-  /** Shows a spinner and ignores activation until the work finishes. */
-  busy?: boolean;
-};
+  size?: keyof typeof sizes;
+} & (
+    | {
+        asChild?: false;
+        busy?: boolean;
+      }
+    | { asChild: true; busy?: never }
+  );
 
 export function Button({
   variant = "primary",
@@ -47,68 +48,36 @@ export function Button({
     "inline-flex shrink-0 items-center justify-center rounded-control font-medium whitespace-nowrap transition-colors",
     "disabled:pointer-events-none disabled:opacity-50 aria-busy:cursor-progress",
     buttonVariants[variant],
-    buttonSizes[size],
+    sizes[size],
     className,
   );
-  // aria-disabled instead of disabled keeps focus on the button while it
-  // works, so keyboard users don't lose their place.
-  const busyProps = busy
-    ? { "aria-busy": true, "aria-disabled": true }
-    : undefined;
-  const handleClick = (event: MouseEvent<HTMLButtonElement>) => {
-    if (busy) {
-      // Also stops a submit button from submitting its form again.
-      event.preventDefault();
-      return;
-    }
-    onClick?.(event);
-  };
-  const spinner = busy && <Spinner key="spinner" size={iconSizes[size]} />;
 
   if (asChild) {
-    const slotProps = {
-      className: classes,
-      onClick: handleClick,
-      ...busyProps,
-      ...props,
-      // Slot runs the child's own onClick before ours, so a busy button has
-      // to stop the click before it reaches the child.
-      ...(busy && { onClickCapture: stopActivation }),
-    };
-    // Context only, so it can wrap Slot without breaking its single child.
-    // Slottable has to be a direct child of Slot for the spinner to land
-    // inside the caller's element.
     return (
       <LucideProvider size={iconSizes[size]} strokeWidth={1.75}>
-        {busy ? (
-          <Slot {...slotProps}>
-            {spinner}
-            <Slottable>{children}</Slottable>
-          </Slot>
-        ) : (
-          <Slot {...slotProps}>{children}</Slot>
-        )}
+        <Slot className={classes} onClick={onClick} {...props}>
+          {children}
+        </Slot>
       </LucideProvider>
     );
   }
   return (
     <button
-      // Not the HTML default "submit": a Button in a form never submits by accident.
       type={type ?? "button"}
       className={classes}
-      onClick={handleClick}
-      {...busyProps}
+      // aria-disabled, not disabled, so focus stays on the button while busy.
+      aria-busy={busy || undefined}
+      aria-disabled={busy || undefined}
+      onClick={(event) => {
+        if (busy) event.preventDefault();
+        else onClick?.(event);
+      }}
       {...props}
     >
       <LucideProvider size={iconSizes[size]} strokeWidth={1.75}>
-        {spinner}
+        {busy && <Spinner size={iconSizes[size]} />}
         {children}
       </LucideProvider>
     </button>
   );
-}
-
-function stopActivation(event: MouseEvent) {
-  event.preventDefault();
-  event.stopPropagation();
 }

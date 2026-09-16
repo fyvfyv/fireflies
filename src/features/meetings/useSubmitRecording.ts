@@ -18,7 +18,6 @@ export type SubmitPhase = "upload" | "create";
 type SubmitState = {
   phase: SubmitPhase | null;
   error: string | null;
-  // False when retrying the same input can't help.
   canRetry: boolean;
 };
 
@@ -26,21 +25,17 @@ const IDLE: SubmitState = { phase: null, error: null, canRetry: false };
 
 const UPLOAD_FAILED =
   "Couldn't upload the audio. Check your connection and try again.";
-// The upload token would refuse it anyway, with an error that reads like a
-// network problem.
+// The upload token would reject it with a misleading network-style error.
 const TOO_LARGE = `This recording is over the ${MAX_AUDIO_BYTES / 1024 / 1024} MB limit, so it can't be transcribed. You can still download it.`;
 
 export function useSubmitRecording() {
   const navigate = useNavigate();
   const [state, setState] = useState<SubmitState>(IDLE);
-  // Kept after a failure so a retry of the same Blob skips a finished upload.
   const pendingRef = useRef<{
     input: SubmitInput;
     uploaded?: UploadedAudio;
   } | null>(null);
   const busyRef = useRef(false);
-  // Where the running submit is navigating, so a leave guard can let exactly
-  // that navigation through while still guarding the user's own clicks.
   const targetRef = useRef<string | null>(null);
   const mountedRef = useRef(false);
   useEffect(() => {
@@ -85,10 +80,9 @@ export function useSubmitRecording() {
           durationSeconds: input.durationSeconds,
         });
         pendingRef.current = null;
-        // Deliberately detached: the request keeps running after this page
-        // unmounts, and the meeting page reports the outcome by polling.
+        // Detached: outlives this page; the meeting page polls for the result.
         processMeeting(meeting.id).catch(() => {});
-        // The user left mid-save; the router would still pull them over.
+        // The user left mid-save; navigating now would still pull them back.
         if (!mountedRef.current) return;
         targetRef.current = `/m/${meeting.id}`;
         navigate(targetRef.current);
@@ -111,14 +105,12 @@ export function useSubmitRecording() {
     if (pending) await submit(pending.input);
   }, [submit]);
 
-  // Forgets a failed submission, so a discarded recording can't be retried.
   const clear = useCallback(() => {
     pendingRef.current = null;
     setState(IDLE);
   }, []);
 
-  // Read synchronously by a navigation blocker; the router checks blockers
-  // inside navigate().
+  // A ref, not state: the router runs blockers synchronously inside navigate().
   const isOwnNavigation = useCallback(
     (pathname: string) => targetRef.current === pathname,
     [],

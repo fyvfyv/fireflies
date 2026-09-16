@@ -9,12 +9,8 @@ function subscribe(onChange: () => void) {
 }
 
 const getSnapshot = () => window.matchMedia(QUERY).matches;
-const getServerSnapshot = () => false;
 
-/**
- * For motion CSS can't switch off: canvas animation loops run in script, so
- * the global reduced-motion rules in index.css don't reach them.
- */
+// The global reduced-motion CSS can't stop script-driven animation.
 export function useReducedMotion(): boolean {
-  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+  return useSyncExternalStore(subscribe, getSnapshot);
 }

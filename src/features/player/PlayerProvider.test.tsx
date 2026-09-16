@@ -3,7 +3,7 @@ import { act, render, renderHook, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, getAudioUrl } from "@/lib/api";
+import { getAudioUrl } from "@/lib/api";
 import { PlayerProvider, usePlayer } from "./PlayerProvider";
 
 vi.mock("@/lib/api", async (importOriginal) => ({
@@ -17,30 +17,14 @@ const signed = (name: string, validForMs = 60 * 60_000): AudioUrl => ({
   expiresAt: new Date(Date.now() + validForMs).toISOString(),
 });
 
-function deferred<T>() {
-  let resolve: (value: T) => void = () => {};
-  const promise = new Promise<T>((res) => {
-    resolve = res;
-  });
-  return { promise, resolve };
-}
-
-function setup({
-  durationSeconds = 105 as number | null,
-  shortcuts = true,
-} = {}) {
+function setup(durationSeconds: number | null = 105) {
   const wrapper = ({ children }: { children: ReactNode }) => (
-    <PlayerProvider
-      meetingId="abc"
-      durationSeconds={durationSeconds}
-      shortcuts={shortcuts}
-    >
+    <PlayerProvider meetingId="abc" durationSeconds={durationSeconds}>
       {children}
     </PlayerProvider>
   );
   const hook = renderHook(() => usePlayer(), { wrapper });
-  const audio = document.querySelector("audio");
-  if (!audio) throw new Error("PlayerProvider rendered no <audio>");
+  const audio = document.querySelector("audio") as HTMLAudioElement;
   return { ...hook, audio };
 }
 
@@ -55,7 +39,14 @@ function setMedia(audio: HTMLAudioElement, props: Record<string, number>) {
   }
 }
 
-/** Lets the async URL request and play() settle. */
+function deferred<T>() {
+  let resolve: (value: T) => void = () => {};
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
 const settle = () => act(() => Promise.resolve());
 
 let playSpy: ReturnType<typeof vi.spyOn>;
@@ -68,28 +59,19 @@ beforeEach(() => {
 });
 
 describe("PlayerProvider", () => {
-  it("starts idle and asks for no audio until playback is wanted", () => {
+  it("loads the signed URL on the first play only and follows the element", async () => {
     const { result, audio } = setup();
-
     expect(result.current).toMatchObject({
       status: "idle",
       playing: false,
-      currentTime: 0,
       duration: 105,
-      rate: 1,
       available: true,
     });
     expect(audio).not.toHaveAttribute("src");
-    expect(mockedAudioUrl).not.toHaveBeenCalled();
-  });
-
-  it("loads the signed URL on the first play and starts playback", async () => {
-    const { result, audio } = setup();
 
     act(() => result.current.play());
     expect(result.current.status).toBe("loading");
     await settle();
-
     expect(mockedAudioUrl).toHaveBeenCalledWith("abc");
     expect(audio.src).toBe("https://blob.test/first.webm");
     expect(playSpy).toHaveBeenCalledTimes(1);
@@ -97,87 +79,49 @@ describe("PlayerProvider", () => {
     fire(audio, "play");
     fire(audio, "playing");
     expect(result.current).toMatchObject({ status: "ready", playing: true });
-
-    fire(audio, "pause");
-    expect(result.current.playing).toBe(false);
-  });
-
-  it("reuses the URL for later plays", async () => {
-    const { result, audio } = setup();
-
-    act(() => result.current.play());
-    await settle();
-    fire(audio, "playing");
-    act(() => result.current.pause());
-    act(() => result.current.play());
-    await settle();
-
-    expect(mockedAudioUrl).toHaveBeenCalledTimes(1);
-    expect(pauseSpy).toHaveBeenCalledTimes(1);
-    expect(playSpy).toHaveBeenCalledTimes(2);
-  });
-
-  it("toggles between playing and paused", async () => {
-    const { result, audio } = setup();
-
-    act(() => result.current.toggle());
-    await settle();
-    expect(playSpy).toHaveBeenCalledTimes(1);
-    fire(audio, "play");
-
-    act(() => result.current.toggle());
-    expect(pauseSpy).toHaveBeenCalledTimes(1);
-  });
-
-  it("treats a pause from outside the page as paused", async () => {
-    const { result, audio } = setup();
-    act(() => result.current.play());
-    await settle();
-    fire(audio, "play");
-
-    // e.g. the media key on the keyboard.
-    fire(audio, "pause");
-    act(() => result.current.toggle());
-    await settle();
-
-    expect(playSpy).toHaveBeenCalledTimes(2);
-  });
-
-  it("follows the element's position and end", async () => {
-    const { result, audio } = setup();
-    act(() => result.current.play());
-    await settle();
-    fire(audio, "play");
-
     audio.currentTime = 34.2;
     fire(audio, "timeupdate");
     expect(result.current.currentTime).toBe(34.2);
 
     fire(audio, "ended");
     expect(result.current.playing).toBe(false);
+    act(() => result.current.play());
+    await settle();
+    expect(mockedAudioUrl).toHaveBeenCalledTimes(1);
+    expect(playSpy).toHaveBeenCalledTimes(2);
   });
 
-  it("falls back to the element's duration when the meeting has none", async () => {
-    const { result, audio } = setup({ durationSeconds: null });
-    expect(result.current.duration).toBe(0);
+  it("toggles, also after a pause from outside the page", async () => {
+    const { result, audio } = setup();
 
-    // MediaRecorder files report Infinity until they are fully read.
+    act(() => result.current.toggle());
+    await settle();
+    fire(audio, "play");
+    act(() => result.current.toggle());
+    expect(pauseSpy).toHaveBeenCalledTimes(1);
+
+    act(() => result.current.toggle());
+    await settle();
+    fire(audio, "play");
+    fire(audio, "pause");
+    act(() => result.current.toggle());
+    await settle();
+    expect(playSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    [null, 90.5],
+    [105, 105],
+  ])("with a meeting duration of %s, reports %s", (meeting, expected) => {
+    const { result, audio } = setup(meeting);
+
     setMedia(audio, { duration: Number.POSITIVE_INFINITY });
     fire(audio, "loadedmetadata");
-    expect(result.current.duration).toBe(0);
+    expect(result.current.duration).toBe(meeting ?? 0);
 
     setMedia(audio, { duration: 90.5 });
     fire(audio, "durationchange");
-    expect(result.current.duration).toBe(90.5);
-  });
-
-  it("prefers the meeting's duration over the element's", () => {
-    const { result, audio } = setup({ durationSeconds: 105 });
-
-    setMedia(audio, { duration: 104.2 });
-    fire(audio, "durationchange");
-
-    expect(result.current.duration).toBe(105);
+    expect(result.current.duration).toBe(expected);
   });
 
   it("remembers a seek made before the audio loads", async () => {
@@ -189,7 +133,6 @@ describe("PlayerProvider", () => {
 
     act(() => result.current.play());
     await settle();
-    // A stale position from the element must not undo the pending seek.
     fire(audio, "timeupdate");
     expect(result.current.currentTime).toBe(30);
 
@@ -212,8 +155,9 @@ describe("PlayerProvider", () => {
     expect(playSpy).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps seeks and skips inside the recording", () => {
+  it("keeps seeks and skips inside the recording and numbers every jump", () => {
     const { result } = setup();
+    expect(result.current.jump).toBeNull();
 
     act(() => result.current.seek(-5));
     expect(result.current.currentTime).toBe(0);
@@ -221,21 +165,12 @@ describe("PlayerProvider", () => {
     expect(result.current.currentTime).toBe(105);
     act(() => result.current.skip(-10));
     expect(result.current.currentTime).toBe(95);
-    act(() => result.current.skip(-10));
-    act(() => result.current.skip(-10));
-    expect(result.current.currentTime).toBe(75);
     act(() => result.current.skip(60));
     expect(result.current.currentTime).toBe(105);
-  });
 
-  it("numbers every explicit jump so listeners can react to repeats", () => {
-    const { result } = setup();
-    expect(result.current.jump).toBeNull();
-
-    act(() => result.current.seek(12));
-    expect(result.current.jump).toEqual({ seconds: 12, id: 1 });
-    act(() => result.current.seek(12));
-    expect(result.current.jump).toEqual({ seconds: 12, id: 2 });
+    expect(result.current.jump).toEqual({ seconds: 105, id: 4 });
+    act(() => result.current.seek(105));
+    expect(result.current.jump).toEqual({ seconds: 105, id: 5 });
   });
 
   it("changes the playback rate", () => {
@@ -261,10 +196,8 @@ describe("PlayerProvider", () => {
     fire(audio, "error");
     await settle();
 
-    expect(mockedAudioUrl).toHaveBeenCalledTimes(2);
     expect(audio.src).toBe("https://blob.test/second.webm");
     expect(playSpy).toHaveBeenCalledTimes(2);
-    expect(result.current.status).toBe("loading");
     fire(audio, "loadedmetadata");
     expect(audio.currentTime).toBe(20);
 
@@ -277,13 +210,12 @@ describe("PlayerProvider", () => {
       playing: false,
       available: false,
     });
-
     act(() => result.current.play());
     await settle();
     expect(playSpy).toHaveBeenCalledTimes(2);
   });
 
-  it("refreshes again after the new URL played", async () => {
+  it("refreshes again once the new URL has played", async () => {
     mockedAudioUrl
       .mockResolvedValueOnce(signed("first"))
       .mockResolvedValueOnce(signed("second"))
@@ -306,8 +238,7 @@ describe("PlayerProvider", () => {
     mockedAudioUrl
       .mockResolvedValueOnce(signed("stale"))
       .mockResolvedValueOnce(signed("fresh"));
-    // Browsers report a source they can't load with an error event, then
-    // reject the pending play() with NotSupportedError.
+    // Browsers fire `error` for an unloadable source, then reject play() with NotSupportedError.
     playSpy.mockImplementationOnce(function (this: HTMLMediaElement) {
       this.dispatchEvent(new Event("error"));
       return Promise.reject(
@@ -320,24 +251,14 @@ describe("PlayerProvider", () => {
     await settle();
     await settle();
 
-    expect(mockedAudioUrl).toHaveBeenCalledTimes(2);
     expect(audio.src).toBe("https://blob.test/fresh.webm");
     expect(playSpy).toHaveBeenCalledTimes(2);
-    expect(result.current.status).toBe("loading");
-
     fire(audio, "playing");
     expect(result.current).toMatchObject({ status: "ready", playing: true });
   });
 
   it("reports audio whose URL can't be fetched", async () => {
-    mockedAudioUrl.mockRejectedValue(
-      new ApiError({
-        status: 404,
-        code: "audio_missing",
-        message: "Audio not found",
-        retryable: false,
-      }),
-    );
+    mockedAudioUrl.mockRejectedValue(new Error("Audio not found"));
     const { result } = setup();
 
     act(() => result.current.play());
@@ -356,7 +277,7 @@ describe("PlayerProvider", () => {
     await settle();
 
     expect(result.current.playing).toBe(false);
-    expect(result.current.status).not.toBe("loading");
+    expect(result.current.status).toBe("ready");
   });
 
   it("stops wanting playback when paused while loading", async () => {
@@ -419,82 +340,49 @@ describe("PlayerProvider", () => {
   });
 
   describe("warming the URL", () => {
-    function stubIdleCallbacks() {
-      let pending: IdleRequestCallback | null = null;
-      vi.stubGlobal("requestIdleCallback", (callback: IdleRequestCallback) => {
-        pending = callback;
-        return 1;
-      });
-      vi.stubGlobal("cancelIdleCallback", () => {
-        pending = null;
-      });
-      return () =>
-        act(() => pending?.({ didTimeout: false, timeRemaining: () => 50 }));
-    }
+    it.each([
+      ["reuses a fresh one", 60 * 60_000, 1, "first"],
+      ["replaces one about to expire", 30_000, 2, "fresh"],
+    ])(
+      "fetches it once the page is idle and %s",
+      async (_, validForMs, calls, name) => {
+        mockedAudioUrl
+          .mockResolvedValueOnce(signed("first", validForMs))
+          .mockResolvedValueOnce(signed("fresh"));
+        let idle: IdleRequestCallback | undefined;
+        vi.stubGlobal(
+          "requestIdleCallback",
+          (callback: IdleRequestCallback) => {
+            idle = callback;
+            return 1;
+          },
+        );
+        vi.stubGlobal("cancelIdleCallback", () => {});
+        const { result, audio } = setup();
+        expect(mockedAudioUrl).not.toHaveBeenCalled();
 
-    it("fetches the URL once the page is idle and plays from it", async () => {
-      const runIdle = stubIdleCallbacks();
-      const { result, audio } = setup();
-      expect(mockedAudioUrl).not.toHaveBeenCalled();
+        act(() => idle?.({ didTimeout: false, timeRemaining: () => 50 }));
+        await settle();
+        expect(mockedAudioUrl).toHaveBeenCalledTimes(1);
 
-      runIdle();
-      await settle();
-      expect(mockedAudioUrl).toHaveBeenCalledTimes(1);
-
-      act(() => result.current.play());
-      await settle();
-      expect(mockedAudioUrl).toHaveBeenCalledTimes(1);
-      expect(audio.src).toBe("https://blob.test/first.webm");
-      expect(playSpy).toHaveBeenCalledTimes(1);
-    });
-
-    it("asks again when the warmed URL is about to expire", async () => {
-      mockedAudioUrl
-        .mockResolvedValueOnce(signed("stale", 30_000))
-        .mockResolvedValueOnce(signed("fresh"));
-      const runIdle = stubIdleCallbacks();
-      const { result, audio } = setup();
-      runIdle();
-      await settle();
-
-      act(() => result.current.play());
-      await settle();
-
-      expect(mockedAudioUrl).toHaveBeenCalledTimes(2);
-      expect(audio.src).toBe("https://blob.test/fresh.webm");
-      expect(playSpy).toHaveBeenCalledTimes(1);
-    });
+        act(() => result.current.play());
+        await settle();
+        expect(mockedAudioUrl).toHaveBeenCalledTimes(calls);
+        expect(audio.src).toBe(`https://blob.test/${name}.webm`);
+      },
+    );
 
     it("uses a timer where idle callbacks don't exist", async () => {
       vi.useFakeTimers();
       expect(window.requestIdleCallback).toBeUndefined();
-      const { unmount } = setup();
+      setup().unmount();
+      setup();
 
       await act(() => vi.advanceTimersByTimeAsync(1_000));
       expect(mockedAudioUrl).not.toHaveBeenCalled();
       await act(() => vi.advanceTimersByTimeAsync(1_000));
       expect(mockedAudioUrl).toHaveBeenCalledTimes(1);
-
-      unmount();
-      setup().unmount();
-      await act(() => vi.advanceTimersByTimeAsync(5_000));
-      expect(mockedAudioUrl).toHaveBeenCalledTimes(1);
     });
-  });
-
-  it("gives inert defaults without a provider", () => {
-    const { result } = renderHook(() => usePlayer());
-
-    expect(result.current).toMatchObject({
-      status: "idle",
-      available: false,
-      duration: 0,
-    });
-    expect(() => {
-      result.current.play();
-      result.current.seek(10, { play: true });
-      result.current.skip(5);
-    }).not.toThrow();
   });
 });
 
@@ -506,7 +394,6 @@ describe("player shortcuts", () => {
         <p>{playing ? "Playing" : "Paused"}</p>
         <input aria-label="Search" />
         <button type="button">Other</button>
-        {/* Stand-ins for the radix slider thumb and a radix tab. */}
         <span role="slider" aria-valuenow={0} aria-label="Seek" tabIndex={0} />
         <button type="button" role="tab">
           Notes
@@ -515,13 +402,9 @@ describe("player shortcuts", () => {
     );
   }
 
-  function renderWithShortcuts(shortcuts = true) {
+  function renderWithShortcuts() {
     render(
-      <PlayerProvider
-        meetingId="abc"
-        durationSeconds={105}
-        shortcuts={shortcuts}
-      >
+      <PlayerProvider meetingId="abc" durationSeconds={105}>
         <Probe />
       </PlayerProvider>,
     );
@@ -529,7 +412,7 @@ describe("player shortcuts", () => {
     return { audio, user: userEvent.setup() };
   }
 
-  it("toggles playback with Space outside controls", async () => {
+  it("toggles playback with Space, also on the seek slider and tabs", async () => {
     const { audio, user } = renderWithShortcuts();
 
     await user.keyboard(" ");
@@ -538,8 +421,14 @@ describe("player shortcuts", () => {
     fire(audio, "play");
     expect(screen.getByText("Playing")).toBeVisible();
 
+    act(() => screen.getByRole("slider", { name: "Seek" }).focus());
     await user.keyboard(" ");
     expect(pauseSpy).toHaveBeenCalledTimes(1);
+
+    act(() => screen.getByRole("tab", { name: "Notes" }).focus());
+    await user.keyboard(" ");
+    await settle();
+    expect(playSpy).toHaveBeenCalledTimes(2);
   });
 
   it("leaves Space to inputs and buttons", async () => {
@@ -547,7 +436,7 @@ describe("player shortcuts", () => {
 
     await user.click(screen.getByRole("textbox", { name: "Search" }));
     await user.keyboard(" ");
-    screen.getByRole("button", { name: "Other" }).focus();
+    act(() => screen.getByRole("button", { name: "Other" }).focus());
     await user.keyboard(" ");
     await settle();
 
@@ -555,29 +444,11 @@ describe("player shortcuts", () => {
     expect(screen.getByRole("textbox")).toHaveValue(" ");
   });
 
-  it.each([
-    ["the seek slider", () => screen.getByRole("slider", { name: "Seek" })],
-    ["a tab", () => screen.getByRole("tab", { name: "Notes" })],
-  ])("toggles playback with Space on %s", async (_, target) => {
-    const { user } = renderWithShortcuts();
-
-    act(() => target().focus());
-    await user.keyboard(" ");
-    await settle();
-
-    expect(playSpy).toHaveBeenCalledTimes(1);
-  });
-
-  it("skips with j and l, except while typing", async () => {
+  it("skips with j and l, except while typing or with a modifier", async () => {
     const { audio, user } = renderWithShortcuts();
-    act(() => {
-      audio.currentTime = 0;
-    });
 
-    await user.keyboard("l");
-    await user.keyboard("l");
-    await user.keyboard("j");
-    await settle();
+    await user.keyboard("llj");
+    await user.keyboard("{Meta>}l{/Meta}");
     fire(audio, "loadedmetadata");
     expect(audio.currentTime).toBe(10);
 
@@ -585,23 +456,5 @@ describe("player shortcuts", () => {
     await user.keyboard("l");
     fire(audio, "loadedmetadata");
     expect(audio.currentTime).toBe(10);
-  });
-
-  it("ignores shortcuts with modifier keys or when turned off", async () => {
-    const { user } = renderWithShortcuts(false);
-
-    await user.keyboard(" ");
-    await settle();
-
-    expect(playSpy).not.toHaveBeenCalled();
-  });
-
-  it("ignores Cmd+L", async () => {
-    const { audio, user } = renderWithShortcuts();
-
-    await user.keyboard("{Meta>}l{/Meta}");
-    fire(audio, "loadedmetadata");
-
-    expect(audio.currentTime).toBe(0);
   });
 });

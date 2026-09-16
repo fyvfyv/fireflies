@@ -2,16 +2,15 @@ import { describe, expect, it } from "vitest";
 import { parseEnv } from "./env.js";
 
 describe("parseEnv", () => {
-  it("applies defaults", () => {
-    expect(parseEnv({})).toEqual({
+  it("applies defaults, treating empty values as unset", () => {
+    const defaults = {
       STT_PROVIDER: "gateway",
       STT_MODEL: "openai/whisper-1",
       LLM_MODEL: "anthropic/claude-haiku-4.5",
       LLM_FALLBACK_MODELS: ["google/gemini-2.5-flash"],
-    });
-  });
+    };
 
-  it("treats empty values as unset", () => {
+    expect(parseEnv({})).toEqual(defaults);
     expect(
       parseEnv({
         STT_PROVIDER: "",
@@ -20,7 +19,7 @@ describe("parseEnv", () => {
         LLM_MODEL: "",
         LLM_FALLBACK_MODELS: "",
       }),
-    ).toEqual(parseEnv({}));
+    ).toEqual(defaults);
   });
 
   it("splits comma-separated fallback models", () => {

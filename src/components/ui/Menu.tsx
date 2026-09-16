@@ -5,7 +5,6 @@ import type { ComponentProps } from "react";
 
 export const Menu = MenuPrimitive.Root;
 export const MenuTrigger = MenuPrimitive.Trigger;
-export const MenuGroup = MenuPrimitive.Group;
 export const MenuRadioGroup = MenuPrimitive.RadioGroup;
 
 export function MenuContent({
@@ -32,12 +31,7 @@ export function MenuContent({
   );
 }
 
-// The sunken fill alone is 1.16:1 against the sheet, too faint to follow by
-// keyboard. Radix also focuses items on pointer hover, but programmatically,
-// which doesn't match :focus-visible after mouse use: pointer users keep the
-// quiet fill, keyboard users also get an inset ink ring. `outline-none` also
-// zeroes Tailwind's outline-style variable, so the ring restores it with
-// `outline-solid`.
+// `outline-solid` restores the style that `outline-none` zeroes.
 const itemClasses =
   "relative flex min-h-9 cursor-pointer items-center gap-2 rounded-md px-2.5 py-1.5 outline-none select-none data-highlighted:bg-sunken data-disabled:pointer-events-none data-disabled:opacity-50 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ink focus-visible:outline-solid";
 
@@ -58,7 +52,6 @@ export function MenuItem({
   );
 }
 
-/** A single choice inside a MenuRadioGroup; the chosen one shows a check. */
 export function MenuRadioItem({
   className,
   children,

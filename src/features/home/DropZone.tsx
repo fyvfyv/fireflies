@@ -7,34 +7,26 @@ import type { SubmitInput } from "@/features/meetings/useSubmitRecording";
 
 type DropZoneProps = {
   onSubmit: (input: SubmitInput) => void;
-  /** Receives the same message the upload button shows for a bad file. */
   onReject: (message: string) => void;
-  /** Ignores drops, e.g. while recording or saving. */
   disabled?: boolean;
 };
 
 const hasFiles = (event: DragEvent) =>
   Array.from(event.dataTransfer?.types ?? []).includes("Files");
 
-/**
- * Accepts an audio file dropped anywhere on the page and shows an overlay
- * while one is dragged over it.
- */
 export function DropZone({
   onSubmit,
   onReject,
   disabled = false,
 }: DropZoneProps) {
   const [dragging, setDragging] = useState(false);
-  // The window listeners live for the whole mount and read the latest props.
   const latest = useRef({ onSubmit, onReject, disabled });
   useLayoutEffect(() => {
     latest.current = { onSubmit, onReject, disabled };
   });
 
   useEffect(() => {
-    // dragenter/dragleave fire for every element the pointer crosses, so the
-    // overlay stays up while any entered element hasn't been left yet.
+    // dragenter/dragleave fire for every element crossed.
     const entered = new Set<EventTarget>();
     const reset = () => {
       entered.clear();
@@ -49,8 +41,7 @@ export function DropZone({
     };
     const onDragOver = (event: DragEvent) => {
       if (!hasFiles(event)) return;
-      // Cancelled even while disabled: an uncancelled drop makes the browser
-      // open the file itself, leaving the page and any unsaved recording.
+      // Always cancel: an uncancelled drop makes the browser open the file.
       event.preventDefault();
       if (event.dataTransfer) {
         event.dataTransfer.dropEffect = latest.current.disabled
@@ -103,8 +94,6 @@ export function DropZone({
 
   if (!dragging || disabled) return null;
   return (
-    // Pointer events pass through, so the drag keeps reporting the elements
-    // underneath and the drop lands on the page.
     <div
       className={tw(
         "pointer-events-none fixed inset-0 z-40 bg-paper/85 p-3 backdrop-blur-sm sm:p-6",

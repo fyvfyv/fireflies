@@ -10,15 +10,11 @@ const CONTENT_ID = "content";
 const NOTICE =
   "Shared demo workspace. Anyone with the link can see recordings.";
 
-// Pages decide their own width and gutters (the meeting page is full width),
-// so <main> only fills the space under the top bar.
 export function Layout() {
   return (
     <AppProviders>
       <div className={tw("flex min-h-dvh flex-col")}>
         <SkipLink />
-        {/* Without it a page opens at the previous page's scroll offset. The
-            meeting page's hash tabs opt out with preventScrollReset. */}
         <ScrollRestoration />
         <header className={tw("border-b border-rule bg-sheet")}>
           <div
@@ -45,8 +41,7 @@ export function Layout() {
 }
 
 function SkipLink() {
-  // Focus is moved by hand: following the hash would put #content into the
-  // URL, where the meeting page keeps its tab state.
+  // Following the hash would overwrite the meeting page's tab state in the URL.
   const skip = (event: MouseEvent<HTMLAnchorElement>) => {
     event.preventDefault();
     const main = document.getElementById(CONTENT_ID);
@@ -78,8 +73,6 @@ function WorkspaceNotice() {
         <Info aria-hidden="true" className={tw("shrink-0")} />
         <span className={tw("truncate")}>{NOTICE}</span>
       </p>
-      {/* Narrow screens: icon only. Touch has no hover, so a tap opens the
-          tooltip; tapping elsewhere closes it. */}
       <Tooltip
         content={NOTICE}
         open={open}
@@ -90,10 +83,10 @@ function WorkspaceNotice() {
         <button
           type="button"
           aria-label={NOTICE}
-          // The tooltip repeats the name; the explicit key overrides the
-          // description radix would add, so it isn't read twice.
+          // Drops the description radix adds, so the name isn't read twice.
           aria-describedby={undefined}
           onClick={(event) => {
+            // Radix closes the tooltip on click unless the event is prevented.
             event.preventDefault();
             setOpen(true);
           }}

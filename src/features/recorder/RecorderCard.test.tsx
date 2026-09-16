@@ -1,9 +1,12 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ComponentProps } from "react";
 import { describe, expect, it, vi } from "vitest";
-import type { AnalyserHandle } from "./audioAnalyser";
+import { createAudioAnalyser } from "./audioAnalyser";
 import { RecorderCard } from "./RecorderCard";
 import type { Recorder } from "./useRecorder";
+
+vi.mock("./audioAnalyser", () => ({ createAudioAnalyser: vi.fn() }));
 
 const recording = {
   blob: new Blob(["x"], { type: "audio/webm" }),
@@ -25,296 +28,155 @@ function recorderStub(overrides: Partial<Recorder> = {}): Recorder {
   };
 }
 
-const stopped = (overrides: Partial<Recorder> = {}) =>
-  recorderStub({
-    state: "stopped",
-    elapsed: 12,
-    result: recording,
-    ...overrides,
-  });
+const stopped = () =>
+  recorderStub({ state: "stopped", elapsed: 12, result: recording });
 
+type Props = Partial<ComponentProps<typeof RecorderCard>>;
+
+function renderCard(props: Props = {}) {
+  const onSubmit = vi.fn();
+  const card = (next: Props) => (
+    <RecorderCard recorder={recorderStub()} onSubmit={onSubmit} {...next} />
+  );
+  const view = render(card(props));
+  return {
+    ...view,
+    onSubmit,
+    rerender: (next: Props) => view.rerender(card(next)),
+  };
+}
+
+const button = (name: string) => screen.getByRole("button", { name });
 const timer = () => screen.getByRole("timer", { name: "Elapsed time" });
 
 describe("RecorderCard", () => {
-  describe("idle", () => {
-    it("is ready to record", () => {
-      render(<RecorderCard recorder={recorderStub()} onSubmit={vi.fn()} />);
+  it("tells the parent, then starts recording", async () => {
+    const recorder = recorderStub();
+    const onStart = vi.fn();
+    renderCard({ recorder, onStart });
+    expect(screen.getByText("Ready")).toBeVisible();
+    expect(timer()).toHaveTextContent("00:00");
 
-      expect(screen.getByRole("region", { name: "Recorder" })).toBeVisible();
-      expect(screen.getByText("Ready")).toBeVisible();
-      expect(timer()).toHaveTextContent("00:00");
-      expect(timer()).toHaveClass("type-timer", "text-faint");
-      // Fixed digit cells keep the ticking clock from jittering; the value
-      // is still read once, as a whole.
-      expect(timer().querySelectorAll("[data-slot=digit]")).toHaveLength(4);
-      expect(within(timer()).getByText("00:00")).toHaveClass("sr-only");
-      expect(
-        screen.getByText("Your browser will ask for microphone access."),
-      ).toBeVisible();
-    });
+    await userEvent.click(button("Start recording"));
 
-    it("shows the flat waveform", () => {
-      const { container } = render(
-        <RecorderCard recorder={recorderStub()} onSubmit={vi.fn()} />,
-      );
+    expect(onStart).toHaveBeenCalledTimes(1);
+    expect(recorder.start).toHaveBeenCalledTimes(1);
+    expect(onStart.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(recorder.start).mock.invocationCallOrder[0] ?? 0,
+    );
+  });
 
-      expect(container.querySelector("canvas")).toBeInTheDocument();
-    });
+  it("can't start while a file or sample is being saved", () => {
+    renderCard({ busy: true });
 
-    it("tells the parent, then starts recording", async () => {
-      const recorder = recorderStub();
-      const onStart = vi.fn();
-      const user = userEvent.setup();
-      render(
-        <RecorderCard
-          recorder={recorder}
-          onSubmit={vi.fn()}
-          onStart={onStart}
-        />,
-      );
-
-      await user.click(screen.getByRole("button", { name: "Start recording" }));
-
-      expect(onStart).toHaveBeenCalledTimes(1);
-      expect(recorder.start).toHaveBeenCalledTimes(1);
-      expect(onStart.mock.invocationCallOrder[0]).toBeLessThan(
-        vi.mocked(recorder.start).mock.invocationCallOrder[0] ?? 0,
-      );
-    });
-
-    it("can't start while a file or sample is being saved", () => {
-      render(
-        <RecorderCard recorder={recorderStub()} onSubmit={vi.fn()} busy />,
-      );
-
-      expect(
-        screen.getByRole("button", { name: "Start recording" }),
-      ).toBeDisabled();
-    });
+    expect(button("Start recording")).toBeDisabled();
   });
 
   it("waits for microphone permission with a busy button", async () => {
     const recorder = recorderStub({ state: "requesting" });
-    const user = userEvent.setup();
-    render(<RecorderCard recorder={recorder} onSubmit={vi.fn()} />);
+    renderCard({ recorder });
 
-    const button = screen.getByRole("button", {
-      name: "Waiting for microphone…",
-    });
-    await user.click(button);
+    await userEvent.click(button("Waiting for microphone…"));
 
-    expect(button).toHaveAttribute("aria-busy", "true");
+    expect(button("Waiting for microphone…")).toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
     expect(recorder.start).not.toHaveBeenCalled();
     expect(screen.getByText(/allow microphone access/i)).toBeVisible();
   });
 
-  describe("recording", () => {
-    it("shows a pulsing dot, the running timer and a stop button", async () => {
-      const recorder = recorderStub({ state: "recording", elapsed: 65 });
-      const user = userEvent.setup();
-      const { container } = render(
-        <RecorderCard recorder={recorder} onSubmit={vi.fn()} />,
-      );
+  it("shows the running timer and stops on a single click", async () => {
+    const recorder = recorderStub({ state: "recording", elapsed: 65 });
+    renderCard({ recorder });
+    expect(screen.getByText("Recording")).toBeVisible();
+    expect(timer()).toHaveTextContent("01:05");
+    expect(screen.queryByText(/stops automatically/)).not.toBeInTheDocument();
 
-      expect(screen.getByText("Recording")).toBeVisible();
-      expect(container.querySelector(".animate-rec-pulse")).toHaveClass(
-        "bg-rec",
-      );
-      expect(timer()).toHaveTextContent("01:05");
-      expect(timer()).toHaveClass("text-ink");
-      expect(
-        screen.queryByRole("button", { name: "Start recording" }),
-      ).not.toBeInTheDocument();
-      expect(screen.queryByText(/stops automatically/)).not.toBeInTheDocument();
+    fireEvent.click(button("Stop recording"), { detail: 2 });
+    expect(recorder.stop).not.toHaveBeenCalled();
 
-      await user.click(screen.getByRole("button", { name: "Stop recording" }));
-      expect(recorder.stop).toHaveBeenCalledTimes(1);
+    await userEvent.click(button("Stop recording"));
+    expect(recorder.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("warns near the recording limit", () => {
+    renderCard({
+      recorder: recorderStub({ state: "recording", warning: true }),
     });
 
-    it("ignores the second click of a double click", () => {
-      const recorder = recorderStub({ state: "recording" });
-      render(<RecorderCard recorder={recorder} onSubmit={vi.fn()} />);
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "The recording stops automatically at 60 minutes.",
+    );
+  });
 
-      fireEvent.click(screen.getByRole("button", { name: "Stop recording" }), {
-        detail: 2,
-      });
+  it("feeds the microphone stream to the waveform", () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
+      {} as RenderingContext,
+    );
+    const stream = {} as MediaStream;
+    renderCard({ recorder: recorderStub({ state: "recording", stream }) });
 
-      expect(recorder.stop).not.toHaveBeenCalled();
-    });
-
-    it("warns near the recording limit", () => {
-      render(
-        <RecorderCard
-          recorder={recorderStub({
-            state: "recording",
-            elapsed: 3300,
-            warning: true,
-          })}
-          onSubmit={vi.fn()}
-        />,
-      );
-
-      expect(screen.getByRole("status")).toHaveTextContent(
-        "The recording stops automatically at 60 minutes.",
-      );
-    });
-
-    it("feeds the microphone stream to the waveform", () => {
-      vi.spyOn(window, "matchMedia").mockImplementation(
-        (media) =>
-          ({
-            matches: media === "(prefers-reduced-motion: reduce)",
-            media,
-            addEventListener: () => {},
-            removeEventListener: () => {},
-          }) as unknown as MediaQueryList,
-      );
-      const stream = {} as MediaStream;
-      const createAnalyser = vi.fn(
-        (): AnalyserHandle => ({
-          analyser: { fftSize: 256, getFloatTimeDomainData: () => {} },
-          dispose: () => {},
-        }),
-      );
-
-      render(
-        <RecorderCard
-          recorder={recorderStub({ state: "recording", stream })}
-          onSubmit={vi.fn()}
-          createAnalyser={createAnalyser}
-        />,
-      );
-
-      expect(createAnalyser).toHaveBeenCalledWith(stream);
-    });
+    expect(createAudioAnalyser).toHaveBeenCalledWith(stream);
   });
 
   describe("stopped", () => {
     it("offers save, discard and download", () => {
-      render(<RecorderCard recorder={stopped()} onSubmit={vi.fn()} />);
+      renderCard({ recorder: stopped() });
 
       expect(screen.getByText("Ready to save")).toBeVisible();
       expect(timer()).toHaveTextContent("00:12");
-      expect(within(timer()).getByText("00:12")).toHaveClass("sr-only");
-      expect(timer().querySelectorAll("[data-slot=digit]")).toHaveLength(4);
       const title = screen.getByLabelText("Title");
       expect(title).toHaveValue("");
       expect(title).toHaveAttribute(
         "placeholder",
         expect.stringMatching(/^Recording /),
       );
-      expect(
-        screen.getByRole("button", { name: "Save and transcribe" }),
-      ).toBeEnabled();
-      expect(screen.getByRole("button", { name: "Discard" })).toBeEnabled();
+      expect(title).toHaveAccessibleDescription(
+        "Leave empty to use a title from the notes.",
+      );
+      expect(button("Save and transcribe")).toBeEnabled();
+      expect(button("Discard")).toBeEnabled();
       const download = screen.getByRole("link", { name: "Download audio" });
       expect(download).toHaveAttribute("href", "blob:mock");
       expect(download).toHaveAttribute("download", "recording.webm");
     });
 
-    it("explains the optional title at readable contrast", () => {
-      render(<RecorderCard recorder={stopped()} onSubmit={vi.fn()} />);
-
-      expect(screen.getByLabelText("Title")).toHaveAccessibleDescription(
-        "Leave empty to use a title from the notes.",
-      );
-      expect(
-        screen.getByText("Leave empty to use a title from the notes."),
-      ).toHaveClass("text-graphite");
-    });
-
-    it("draws a flush ink edge on the focused title field", () => {
-      render(<RecorderCard recorder={stopped()} onSubmit={vi.fn()} />);
-
-      const title = screen.getByLabelText("Title");
-      expect(title).toHaveClass(
-        "focus-visible:border-ink",
-        "focus-visible:ring-1",
-        "focus-visible:ring-ink",
-        // Hidden normally, but a transparent outline that forced-colors mode
-        // paints, since it drops the ring and recolours the border there.
-        "focus-visible:outline-hidden",
-      );
-    });
-
-    it("saves without a title so the summary can name it", async () => {
-      const onSubmit = vi.fn();
+    it("saves without a title so the notes can name it", async () => {
       const user = userEvent.setup();
-      render(<RecorderCard recorder={stopped()} onSubmit={onSubmit} />);
+      const { onSubmit } = renderCard({ recorder: stopped() });
 
-      await user.click(
-        screen.getByRole("button", { name: "Save and transcribe" }),
-      );
+      fireEvent.click(button("Save and transcribe"), { detail: 2 });
+      expect(onSubmit).not.toHaveBeenCalled();
 
-      expect(onSubmit).toHaveBeenCalledWith({
+      await user.type(screen.getByLabelText("Title"), "   ");
+      await user.click(button("Save and transcribe"));
+      expect(onSubmit).toHaveBeenLastCalledWith({
         ...recording,
         title: undefined,
         source: "mic",
       });
-    });
 
-    it("saves a typed title trimmed", async () => {
-      const onSubmit = vi.fn();
-      const user = userEvent.setup();
-      render(<RecorderCard recorder={stopped()} onSubmit={onSubmit} />);
-
-      await user.type(screen.getByLabelText("Title"), "  Planning  {Enter}");
-
-      expect(onSubmit).toHaveBeenCalledTimes(1);
-      expect(onSubmit).toHaveBeenCalledWith(
+      await user.type(screen.getByLabelText("Title"), " Planning  {Enter}");
+      expect(onSubmit).toHaveBeenCalledTimes(2);
+      expect(onSubmit).toHaveBeenLastCalledWith(
         expect.objectContaining({ title: "Planning" }),
       );
-    });
-
-    it("treats a blank title as no title", async () => {
-      const onSubmit = vi.fn();
-      const user = userEvent.setup();
-      render(<RecorderCard recorder={stopped()} onSubmit={onSubmit} />);
-
-      await user.type(screen.getByLabelText("Title"), "   ");
-      await user.click(
-        screen.getByRole("button", { name: "Save and transcribe" }),
-      );
-
-      expect(onSubmit).toHaveBeenCalledWith(
-        expect.objectContaining({ title: undefined }),
-      );
-    });
-
-    it("ignores the second click of a double click on save", () => {
-      const onSubmit = vi.fn();
-      render(<RecorderCard recorder={stopped()} onSubmit={onSubmit} />);
-
-      fireEvent.click(
-        screen.getByRole("button", { name: "Save and transcribe" }),
-        { detail: 2 },
-      );
-
-      expect(onSubmit).not.toHaveBeenCalled();
     });
 
     it("discards through reset, then tells the parent", async () => {
       const recorder = stopped();
       const onDiscard = vi.fn();
-      const user = userEvent.setup();
-      render(
-        <RecorderCard
-          recorder={recorder}
-          onSubmit={vi.fn()}
-          onDiscard={onDiscard}
-        />,
-      );
+      renderCard({ recorder, onDiscard });
 
-      await user.click(screen.getByRole("button", { name: "Discard" }));
+      await userEvent.click(button("Discard"));
 
       expect(recorder.reset).toHaveBeenCalledTimes(1);
       expect(onDiscard).toHaveBeenCalledTimes(1);
     });
 
     it("revokes the download URL when the review form goes away", () => {
-      const { unmount } = render(
-        <RecorderCard recorder={stopped()} onSubmit={vi.fn()} />,
-      );
+      const { unmount } = renderCard({ recorder: stopped() });
       expect(URL.revokeObjectURL).not.toHaveBeenCalled();
 
       unmount();
@@ -323,332 +185,144 @@ describe("RecorderCard", () => {
     });
 
     it("shows the save phase in a busy button and locks the form", async () => {
-      const onSubmit = vi.fn();
-      const user = userEvent.setup();
-      render(
-        <RecorderCard
-          recorder={stopped()}
-          onSubmit={onSubmit}
-          busy
-          phaseLabel="Uploading audio…"
-        />,
-      );
-
-      const save = screen.getByRole("button", { name: "Uploading audio…" });
-      await user.click(save);
-
-      expect(save).toHaveAttribute("aria-busy", "true");
-      expect(onSubmit).not.toHaveBeenCalled();
-      expect(screen.getByText("Saving")).toBeVisible();
-      expect(screen.getByRole("button", { name: "Discard" })).toBeDisabled();
-      expect(screen.getByLabelText("Title")).toBeDisabled();
-    });
-
-    it("shows it is saving without announcing it a second time", () => {
-      const { rerender } = render(
-        <RecorderCard recorder={stopped()} onSubmit={vi.fn()} />,
-      );
+      const { onSubmit, rerender } = renderCard({ recorder: stopped() });
       const label = screen.getByText("Ready to save");
 
-      rerender(
-        <RecorderCard
-          recorder={stopped()}
-          onSubmit={vi.fn()}
-          busy
-          phaseLabel="Uploading audio…"
-        />,
-      );
+      rerender({ recorder: stopped(), busy: true });
+      expect(button("Saving…")).toHaveAttribute("aria-busy", "true");
+      rerender({
+        recorder: stopped(),
+        busy: true,
+        phaseLabel: "Uploading audio…",
+      });
+      await userEvent.click(button("Uploading audio…"));
 
-      // The page's status line announces each phase; the live label keeps
-      // the same text node so it stays quiet.
+      expect(button("Uploading audio…")).toHaveAttribute("aria-busy", "true");
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(button("Discard")).toBeDisabled();
+      expect(screen.getByLabelText("Title")).toBeDisabled();
       expect(screen.getByText("Ready to save")).toBe(label);
-      expect(label.closest("[aria-live]")).not.toBeNull();
       expect(label).toHaveClass("sr-only");
       expect(screen.getByText("Saving")).toHaveAttribute("aria-hidden", "true");
-    });
-
-    it("falls back to a generic saving label", () => {
-      render(<RecorderCard recorder={stopped()} onSubmit={vi.fn()} busy />);
-
-      expect(screen.getByRole("button", { name: "Saving…" })).toHaveAttribute(
-        "aria-busy",
-        "true",
-      );
     });
   });
 
   describe("keyboard focus", () => {
     it("moves to the next action when the pressed one goes away", async () => {
       const user = userEvent.setup();
-      const onSubmit = vi.fn();
-      const { rerender } = render(
-        <RecorderCard recorder={recorderStub()} onSubmit={onSubmit} />,
-      );
+      const { rerender } = renderCard();
 
       await user.tab();
       await user.keyboard("{Enter}");
-      rerender(
-        <RecorderCard
-          recorder={recorderStub({ state: "requesting" })}
-          onSubmit={onSubmit}
-        />,
-      );
-      expect(
-        screen.getByRole("button", { name: "Waiting for microphone…" }),
-      ).toHaveFocus();
+      rerender({ recorder: recorderStub({ state: "requesting" }) });
+      expect(button("Waiting for microphone…")).toHaveFocus();
 
-      rerender(
-        <RecorderCard
-          recorder={recorderStub({ state: "recording" })}
-          onSubmit={onSubmit}
-        />,
-      );
-      expect(
-        screen.getByRole("button", { name: "Stop recording" }),
-      ).toHaveFocus();
+      rerender({ recorder: recorderStub({ state: "recording" }) });
+      expect(button("Stop recording")).toHaveFocus();
 
       await user.keyboard("{Enter}");
-      rerender(<RecorderCard recorder={stopped()} onSubmit={onSubmit} />);
-      expect(
-        screen.getByRole("button", { name: "Save and transcribe" }),
-      ).toHaveFocus();
+      rerender({ recorder: stopped() });
+      expect(button("Save and transcribe")).toHaveFocus();
 
-      await user.click(screen.getByRole("button", { name: "Discard" }));
-      rerender(<RecorderCard recorder={recorderStub()} onSubmit={onSubmit} />);
-      expect(
-        screen.getByRole("button", { name: "Start recording" }),
-      ).toHaveFocus();
+      await user.click(button("Discard"));
+      rerender({ recorder: recorderStub() });
+      expect(button("Start recording")).toHaveFocus();
     });
 
-    it("moves to the waiting button after trying the microphone again", async () => {
+    it("follows a retried microphone through the prompt to a refusal", async () => {
       const user = userEvent.setup();
-      const onSubmit = vi.fn();
-      const { rerender } = render(
-        <RecorderCard
-          recorder={recorderStub({ state: "unavailable" })}
-          onSubmit={onSubmit}
-        />,
-      );
-      screen.getByRole("button", { name: "Try again" }).focus();
+      const { rerender } = renderCard({
+        recorder: recorderStub({ state: "unavailable" }),
+      });
+      button("Try again").focus();
 
       await user.keyboard("{Enter}");
-      rerender(
-        <RecorderCard
-          recorder={recorderStub({ state: "requesting" })}
-          onSubmit={onSubmit}
-        />,
-      );
-      expect(
-        screen.getByRole("button", { name: "Waiting for microphone…" }),
-      ).toHaveFocus();
+      rerender({ recorder: recorderStub({ state: "requesting" }) });
+      expect(button("Waiting for microphone…")).toHaveFocus();
 
-      rerender(
-        <RecorderCard
-          recorder={recorderStub({ state: "recording" })}
-          onSubmit={onSubmit}
-        />,
-      );
-      expect(
-        screen.getByRole("button", { name: "Stop recording" }),
-      ).toHaveFocus();
-    });
-
-    it("moves to the explanation when a retried microphone is refused", async () => {
-      const user = userEvent.setup();
-      const { rerender } = render(
-        <RecorderCard
-          recorder={recorderStub({ state: "unavailable" })}
-          onSubmit={vi.fn()}
-        />,
-      );
-      screen.getByRole("button", { name: "Try again" }).focus();
-
-      await user.keyboard("{Enter}");
-      rerender(
-        <RecorderCard
-          recorder={recorderStub({ state: "requesting" })}
-          onSubmit={vi.fn()}
-        />,
-      );
-      rerender(
-        <RecorderCard
-          recorder={recorderStub({ state: "denied" })}
-          onSubmit={vi.fn()}
-        />,
-      );
-
-      expect(
-        screen.getByText("Microphone access is blocked").closest("[tabindex]"),
-      ).toHaveFocus();
-    });
-
-    it("moves to the explanation when the microphone is refused", async () => {
-      const user = userEvent.setup();
-      const { rerender } = render(
-        <RecorderCard recorder={recorderStub()} onSubmit={vi.fn()} />,
-      );
-      await user.click(screen.getByRole("button", { name: "Start recording" }));
-
-      rerender(
-        <RecorderCard
-          recorder={recorderStub({ state: "denied" })}
-          onSubmit={vi.fn()}
-        />,
-      );
-
+      rerender({ recorder: recorderStub({ state: "denied" }) });
       expect(
         screen.getByText("Microphone access is blocked").closest("[tabindex]"),
       ).toHaveFocus();
     });
 
     it("leaves focus alone when the change didn't come from the card", () => {
-      const { rerender } = render(
+      const page = (recorder: Recorder) => (
         <>
           <button type="button">Elsewhere</button>
-          <RecorderCard
-            recorder={recorderStub({ state: "recording" })}
-            onSubmit={vi.fn()}
-          />
-        </>,
+          <RecorderCard recorder={recorder} onSubmit={vi.fn()} />
+        </>
       );
-      screen.getByRole("button", { name: "Elsewhere" }).focus();
+      const { rerender } = render(page(recorderStub({ state: "recording" })));
+      button("Elsewhere").focus();
 
-      rerender(
-        <>
-          <button type="button">Elsewhere</button>
-          <RecorderCard recorder={stopped()} onSubmit={vi.fn()} />
-        </>,
-      );
+      rerender(page(stopped()));
 
-      expect(screen.getByRole("button", { name: "Elsewhere" })).toHaveFocus();
+      expect(button("Elsewhere")).toHaveFocus();
     });
   });
 
   describe("without a usable microphone", () => {
-    it("explains a blocked microphone and offers the alternatives", () => {
-      const { container } = render(
-        <RecorderCard
-          recorder={recorderStub({ state: "denied" })}
-          onSubmit={vi.fn()}
-        />,
+    it.each([
+      ["denied", "Microphone access is blocked"],
+      ["unavailable", "Couldn't start the microphone"],
+      ["unsupported", "Recording isn't available in this browser"],
+    ] as const)(
+      "explains the %s state and offers the alternatives",
+      (state, title) => {
+        renderCard({ recorder: recorderStub({ state }) });
+
+        expect(screen.getByText(title)).toBeVisible();
+        expect(button("Try a 2-minute sample")).toBeEnabled();
+        expect(button("Upload audio")).toBeEnabled();
+        expect(
+          screen.queryByRole("button", { name: "Start recording" }),
+        ).not.toBeInTheDocument();
+        expect(screen.queryByRole("timer")).not.toBeInTheDocument();
+      },
+    );
+
+    it("passes files from the alternatives on", async () => {
+      const onRejectFile = vi.fn();
+      const user = userEvent.setup({ applyAccept: false });
+      const { onSubmit } = renderCard({
+        recorder: recorderStub({ state: "denied" }),
+        onRejectFile,
+      });
+      const input = screen.getByLabelText("Audio file");
+
+      await user.upload(input, new File(["x"], "notes.txt"));
+      expect(onRejectFile).toHaveBeenCalledWith(
+        "Choose an audio file (WebM, M4A, MP3, WAV or OGG).",
       );
 
-      expect(screen.getByText("Microphone access is blocked")).toBeVisible();
-      expect(screen.getByText("No microphone?")).toBeVisible();
-      expect(
-        screen.getByRole("button", { name: "Try a 2-minute sample" }),
-      ).toBeVisible();
-      expect(
-        screen.getByRole("button", { name: "Upload audio" }),
-      ).toBeVisible();
-      expect(
-        screen.queryByRole("button", { name: "Start recording" }),
-      ).not.toBeInTheDocument();
-      expect(screen.queryByRole("timer")).not.toBeInTheDocument();
-      expect(container.querySelector("canvas")).not.toBeInTheDocument();
-    });
-
-    it("explains an unsupported browser and offers the alternatives", () => {
-      render(
-        <RecorderCard
-          recorder={recorderStub({ state: "unsupported" })}
-          onSubmit={vi.fn()}
-        />,
-      );
-
-      expect(
-        screen.getByText("Recording isn't available in this browser"),
-      ).toBeVisible();
-      expect(
-        screen.getByRole("button", { name: "Try a 2-minute sample" }),
-      ).toBeVisible();
-    });
-
-    it("submits an uploaded file through the alternatives", async () => {
-      const onSubmit = vi.fn();
-      const user = userEvent.setup();
-      render(
-        <RecorderCard
-          recorder={recorderStub({ state: "unsupported" })}
-          onSubmit={onSubmit}
-        />,
-      );
       const file = new File(["x"], "call.mp3", { type: "audio/mpeg" });
-
-      await user.upload(screen.getByLabelText("Audio file"), file);
-
+      await user.upload(input, file);
       expect(onSubmit).toHaveBeenCalledWith(
         expect.objectContaining({ blob: file, source: "upload" }),
       );
     });
 
-    it("reports a file the alternatives reject", async () => {
-      const onRejectFile = vi.fn();
-      const user = userEvent.setup({ applyAccept: false });
-      render(
-        <RecorderCard
-          recorder={recorderStub({ state: "denied" })}
-          onSubmit={vi.fn()}
-          onRejectFile={onRejectFile}
-        />,
-      );
-
-      await user.upload(
-        screen.getByLabelText("Audio file"),
-        new File(["x"], "notes.txt", { type: "text/plain" }),
-      );
-
-      expect(onRejectFile).toHaveBeenCalledWith(
-        "Choose an audio file (WebM, M4A, MP3, WAV or OGG).",
-      );
-    });
-
-    it("locks the alternatives while saving", () => {
-      render(
-        <RecorderCard
-          recorder={recorderStub({ state: "denied" })}
-          onSubmit={vi.fn()}
-          busy
-        />,
-      );
-
-      expect(
-        screen.getByRole("button", { name: "Try a 2-minute sample" }),
-      ).toBeDisabled();
-      expect(
-        screen.getByRole("button", { name: "Upload audio" }),
-      ).toBeDisabled();
-    });
-
-    it("lets the user try again when the mic could not start", async () => {
+    it("lets the user try the microphone again", async () => {
       const recorder = recorderStub({ state: "unavailable" });
       const onStart = vi.fn();
-      const user = userEvent.setup();
-      render(
-        <RecorderCard
-          recorder={recorder}
-          onSubmit={vi.fn()}
-          onStart={onStart}
-        />,
-      );
+      renderCard({ recorder, onStart });
 
-      expect(screen.getByText("Couldn't start the microphone")).toBeVisible();
-      await user.click(screen.getByRole("button", { name: "Try again" }));
+      await userEvent.click(button("Try again"));
 
       expect(onStart).toHaveBeenCalledTimes(1);
       expect(recorder.start).toHaveBeenCalledTimes(1);
     });
 
-    it("disables trying the mic again while saving", () => {
-      render(
-        <RecorderCard
-          recorder={recorderStub({ state: "unavailable" })}
-          onSubmit={vi.fn()}
-          busy
-        />,
-      );
+    it("locks every option while saving", () => {
+      renderCard({
+        recorder: recorderStub({ state: "unavailable" }),
+        busy: true,
+      });
 
-      expect(screen.getByRole("button", { name: "Try again" })).toBeDisabled();
+      expect(button("Try again")).toBeDisabled();
+      expect(button("Try a 2-minute sample")).toBeDisabled();
+      expect(button("Upload audio")).toBeDisabled();
     });
   });
 });

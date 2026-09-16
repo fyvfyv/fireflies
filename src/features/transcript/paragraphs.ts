@@ -1,8 +1,7 @@
 import type { Segment } from "@shared/schemas";
 import { formatTimestamp } from "@/lib/time";
 
-export type TranscriptSegment = {
-  /** Position in the original segment list; stable across paragraphs. */
+type TranscriptSegment = {
   id: number;
   text: string;
   start: number | null;
@@ -17,9 +16,7 @@ export type Paragraph = {
 
 export type MatchRef = {
   paragraph: number;
-  /** Position inside the paragraph's segments. */
   segment: number;
-  /** Character range inside the segment's text. */
   start: number;
   end: number;
 };
@@ -27,49 +24,32 @@ export type MatchRef = {
 const PAUSE_SECONDS = 1.5;
 const MAX_PARAGRAPH_SECONDS = 20;
 
-const endsWithQuestion = (paragraph: Paragraph) =>
-  paragraph.segments.at(-1)?.text.trimEnd().endsWith("?") ?? false;
-
-/**
- * Whisper segments are sentence-sized; reading them one per line is choppy,
- * so they are joined into paragraphs. A paragraph breaks at a pause, after a
- * question (usually a change of speaker), or before it would pass 20 s, so
- * a long stretch of talk still gets a time anchor every few sentences.
- */
+/** Breaks after a question (usually a speaker change) and every 20 s, so long talk keeps time anchors. */
 export function groupParagraphs(segments: readonly Segment[]): Paragraph[] {
   const paragraphs: Paragraph[] = [];
   let current: (Paragraph & { start: number; end: number }) | null = null;
-  segments.forEach((segment, id) => {
+  for (const [id, segment] of segments.entries()) {
     const text = segment.text.trim();
-    if (!text) return;
-    const item = {
-      id,
-      text,
-      start: segment.startSecond,
-      end: segment.endSecond,
-    };
-    const startsNew =
-      current === null ||
-      segment.startSecond - current.end >= PAUSE_SECONDS ||
-      segment.endSecond - current.start > MAX_PARAGRAPH_SECONDS ||
-      endsWithQuestion(current);
-    if (startsNew || current === null) {
-      current = {
-        start: segment.startSecond,
-        end: segment.endSecond,
-        segments: [item],
-      };
-      paragraphs.push(current);
-    } else {
+    if (!text) continue;
+    const { startSecond: start, endSecond: end } = segment;
+    const item = { id, text, start, end };
+    if (
+      current &&
+      start - current.end < PAUSE_SECONDS &&
+      end - current.start <= MAX_PARAGRAPH_SECONDS &&
+      !current.segments.at(-1)?.text.endsWith("?")
+    ) {
       current.segments.push(item);
-      current.end = Math.max(current.end, segment.endSecond);
+      current.end = Math.max(current.end, end);
+    } else {
+      current = { start, end, segments: [item] };
+      paragraphs.push(current);
     }
-  });
+  }
   return paragraphs;
 }
 
-/** Transcripts from providers without timestamps: one paragraph per line. */
-export function textParagraphs(text: string): Paragraph[] {
+function textParagraphs(text: string): Paragraph[] {
   return text
     .split(/\n+/)
     .map((line) => line.trim())
@@ -84,7 +64,6 @@ export function textParagraphs(text: string): Paragraph[] {
 const escapeRegExp = (text: string) =>
   text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-/** Case-insensitive plain-text matches, in reading order. */
 export function findMatches(
   paragraphs: readonly Paragraph[],
   query: string,
@@ -109,10 +88,7 @@ export function findMatches(
   return matches;
 }
 
-/**
- * The segment being spoken at `seconds`. Pauses keep the previous segment,
- * so the highlight doesn't flicker off between sentences.
- */
+/** Pauses keep the previous segment, so the highlight doesn't flicker between sentences. */
 export function activeSegment(
   paragraphs: readonly Paragraph[],
   seconds: number,
@@ -127,12 +103,11 @@ export function activeSegment(
   return active;
 }
 
-/** Index of the paragraph to show for `seconds`; -1 without timestamps. */
 export function paragraphAt(
   paragraphs: readonly Paragraph[],
   seconds: number,
 ): number {
-  if (paragraphs[0]?.start === null || paragraphs.length === 0) return -1;
+  if (!paragraphs[0] || paragraphs[0].start === null) return -1;
   let index = 0;
   paragraphs.forEach((paragraph, i) => {
     if (paragraph.start !== null && paragraph.start <= seconds) index = i;
@@ -140,7 +115,6 @@ export function paragraphAt(
   return index;
 }
 
-/** Paragraphs for a stored transcript, timed when the provider gave segments. */
 export function transcriptParagraphs(
   text: string,
   segments: readonly Segment[] | null,

@@ -1,8 +1,6 @@
 import { SUMMARY_LIMITS } from "../../shared/schemas.js";
 import type { SummaryInput } from "./types.js";
 
-// Items past a list limit are cut off, so the model has to know the limits
-// and pick the most important items itself.
 const RULES = `You write meeting notes from transcripts.
 
 Rules:
@@ -35,43 +33,22 @@ export const REPAIR_NOTE =
 
 export const MAX_TRANSCRIPT_CHARS = 100_000;
 
-function timedLines({ segments }: SummaryInput): string[] {
-  return (segments ?? []).flatMap(({ text, startSecond }) => {
-    const line = text.replace(/\s+/g, " ").trim();
-    if (!line || !Number.isFinite(startSecond)) return [];
-    // Whole seconds are enough to find a moment and cheaper to copy exactly.
-    return [`[${Math.max(0, Math.floor(startSecond))}s] ${line}`];
+export function buildSummaryPrompt({ text, segments }: SummaryInput) {
+  const lines = (segments ?? []).flatMap((segment) => {
+    const line = segment.text.replace(/\s+/g, " ").trim();
+    if (!line || !Number.isFinite(segment.startSecond)) return [];
+    return [`[${Math.max(0, Math.floor(segment.startSecond))}s] ${line}`];
   });
-}
-
-function render(input: SummaryInput) {
-  const lines = timedLines(input);
-  return lines.length > 0
-    ? { transcript: lines.join("\n"), timed: true }
-    : { transcript: input.text, timed: false };
-}
-
-/** The transcript as the model sees it: one `[Ns] text` line per segment when timestamps exist. */
-export function renderTranscript(input: SummaryInput): string {
-  return render(input).transcript;
-}
-
-export function buildSummaryPrompt(input: SummaryInput): {
-  prompt: string;
-  truncated: boolean;
-} {
-  const { transcript, timed } = render(input);
+  const timed = lines.length > 0;
+  const transcript = timed ? lines.join("\n") : text;
   const truncated = transcript.length > MAX_TRANSCRIPT_CHARS;
-  const shown = truncated
-    ? transcript.slice(0, MAX_TRANSCRIPT_CHARS)
-    : transcript;
   const rules = [
     RULES,
     timed ? TIMESTAMPED_RULE : UNTIMED_RULE,
     ...(truncated ? [TRUNCATED_RULE] : []),
   ].join("\n");
   return {
-    prompt: `${rules}\n\n<transcript>\n${shown}\n</transcript>`,
+    prompt: `${rules}\n\n<transcript>\n${transcript.slice(0, MAX_TRANSCRIPT_CHARS)}\n</transcript>`,
     truncated,
   };
 }

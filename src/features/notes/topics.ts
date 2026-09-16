@@ -8,11 +8,8 @@ const TOPIC_BACKGROUNDS = [
   "bg-topic-6",
 ] as const;
 
-/**
- * Topic color for the note section at `index`, shared by the section swatch
- * and its span on the topic tape so the two read as one thing.
- */
 export function topicBackground(index: number): string {
-  const slot = ((index % 6) + 6) % 6;
-  return TOPIC_BACKGROUNDS[slot] ?? TOPIC_BACKGROUNDS[0];
+  return (
+    TOPIC_BACKGROUNDS[index % TOPIC_BACKGROUNDS.length] ?? TOPIC_BACKGROUNDS[0]
+  );
 }

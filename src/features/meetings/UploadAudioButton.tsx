@@ -11,15 +11,12 @@ import type { SubmitInput } from "./useSubmitRecording";
 
 type UploadAudioButtonProps = {
   onSubmit: (input: SubmitInput) => void;
-  /** Called with the message this button shows for a file it rejects. */
   onReject?: (message: string) => void;
   disabled?: boolean;
   className?: string;
 };
 
-// Browsers and OSes disagree on audio types: .webm files (including
-// recordings downloaded from this app) come as video/webm, WAV and MP3 have
-// legacy aliases, and some systems report no type at all.
+// Browsers report .webm as video/webm, legacy WAV/MP3 aliases, or no type.
 const TYPE_ALIASES: Record<string, string> = {
   "video/webm": "audio/webm",
   "audio/x-wav": "audio/wav",
@@ -47,12 +44,9 @@ function audioType(file: File): string {
   return TYPE_ALIASES[type] ?? type;
 }
 
-export type AudioFileCheck =
-  | { ok: true; contentType: string }
-  | { ok: false; error: string };
-
-/** Shared by the file picker and the page-wide drop zone. */
-export function validateAudioFile(file: File): AudioFileCheck {
+export function validateAudioFile(
+  file: File,
+): { ok: true; contentType: string } | { ok: false; error: string } {
   const contentType = audioType(file);
   if (!isAllowedAudioType(contentType)) {
     return {
@@ -82,15 +76,16 @@ export function UploadAudioButton({
 
   const handleChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    // Cleared so picking the same file again still fires a change event.
+    // Cleared so re-picking the same file still fires change.
     event.target.value = "";
     if (!file) return;
     const check = validateAudioFile(file);
-    setError(check.ok ? null : check.error);
     if (!check.ok) {
+      setError(check.error);
       onReject?.(check.error);
       return;
     }
+    setError(null);
     onSubmit({ blob: file, contentType: check.contentType, source: "upload" });
   };
 
@@ -99,8 +94,7 @@ export function UploadAudioButton({
       <Button
         variant="secondary"
         onClick={(event) => {
-          // The button can appear under the pointer between the two clicks
-          // of a double click on the recorder (Discard).
+          // Can appear under the second click of a Discard double click.
           if (event.detail > 1) return;
           inputRef.current?.click();
         }}

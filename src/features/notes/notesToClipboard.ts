@@ -25,7 +25,6 @@ function richHtml(text: string): string {
     .join("");
 }
 
-// Timestamps travel as plain text: a pasted document can't play the recording.
 const moment = (seconds: number | null) =>
   seconds === null ? "" : ` (${formatTimestamp(seconds)})`;
 
@@ -90,8 +89,6 @@ function blocks(meeting: Meeting): Block[] {
       });
     }
   }
-  // Detailed notes already state every takeaway as a timestamped point, so
-  // only legacy summaries carry the separate list.
   const lists: [string, readonly string[]][] = [
     ["Decisions", summary.decisions],
   ];
@@ -146,10 +143,6 @@ function toHtml(block: Block): string {
   }
 }
 
-/**
- * The meeting's notes for pasting elsewhere: HTML for rich editors and
- * markdown as the plain-text version.
- */
 export function notesToClipboard(meeting: Meeting): {
   html: string;
   markdown: string;

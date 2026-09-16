@@ -32,15 +32,10 @@ const swatches: Record<TopicIndex, string> = {
 };
 
 type MeetingListProps = {
-  /** null until the first load succeeds. */
   meetings: MeetingListItem[] | null;
   loading?: boolean;
-  /** Shown under the heading, e.g. a load error with a retry. */
   alert?: ReactNode;
-  /** Ways to start, offered when there are no meetings at all. */
   emptyActions?: ReactNode;
-  /** Pins "today" in tests; defaults to the current day, kept up to date. */
-  now?: Date;
 };
 
 export function MeetingList({
@@ -48,16 +43,12 @@ export function MeetingList({
   loading = false,
   alert,
   emptyActions,
-  now,
 }: MeetingListProps) {
   const headingId = useId();
   const [query, setQuery] = useState("");
-  // Nothing else re-renders the list once polling stops, so the day labels
-  // need their own clock.
-  const today = useToday();
-  const current = now ?? today;
+  const now = useToday();
   const searchable = meetings !== null && meetings.length > 0;
-  const visible = meetings && filterMeetings(meetings, query);
+  const visible = filterMeetings(meetings ?? [], query);
   const searching = searchable && query.trim() !== "";
 
   return (
@@ -80,24 +71,23 @@ export function MeetingList({
           />
         )}
       </div>
-      {/* Created up front so screen readers announce result counts as the
-          query changes. */}
+      {/* Live regions must exist before their content changes. */}
       <p aria-live="polite" className={tw("sr-only")}>
-        {searching && visible ? resultCount(visible.length) : ""}
+        {searching ? resultCount(visible.length) : ""}
       </p>
       {alert}
       {meetings === null ? (
         loading && <SkeletonRows />
       ) : meetings.length === 0 ? (
         <EmptyState actions={emptyActions} />
-      ) : visible && visible.length > 0 ? (
+      ) : visible.length > 0 ? (
         <div className={tw("space-y-7")}>
-          {groupByDay(visible, current).map((group) => (
+          {groupByDay(visible, now).map((group) => (
             <DayGroup
               key={group.label}
               label={group.label}
               meetings={group.items}
-              now={current}
+              now={now}
             />
           ))}
         </div>
@@ -153,10 +143,6 @@ function DayGroup({
   );
 }
 
-// Grid columns on wide screens: swatch, title + snippet, status, duration,
-// action items, time. The time anchors the right edge, so a done row's quiet
-// check leaves no dead gap after it. Below md the meta cells wrap into a
-// third line.
 const rowGrid = tw(
   "grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1.5 px-4 py-3.5",
   "md:grid-cols-[auto_minmax(0,1fr)_7.5rem_4.5rem_3.5rem_5.75rem] md:gap-x-5 md:px-5",
@@ -166,8 +152,6 @@ function MeetingRow({ meeting, now }: { meeting: MeetingListItem; now: Date }) {
   const id = useId();
   const done = meeting.status === "done";
   const count = meeting.actionItemCount;
-  // `faint` is under 4.5:1 on the sheet, so it only colors this placeholder;
-  // text that carries meaning stays `graphite`.
   const placeholder = (
     <span aria-hidden="true" className={tw("text-faint")}>
       –
@@ -177,8 +161,6 @@ function MeetingRow({ meeting, now }: { meeting: MeetingListItem; now: Date }) {
   return (
     <Link
       to={`/m/${meeting.id}`}
-      // Named by the title alone; the rest of the row is read as the
-      // description, so link lists stay scannable.
       aria-labelledby={`${id}-title`}
       aria-describedby={`${id}-snippet ${id}-meta ${id}-status`}
       className={tw(
@@ -188,7 +170,6 @@ function MeetingRow({ meeting, now }: { meeting: MeetingListItem; now: Date }) {
     >
       <span
         aria-hidden="true"
-        data-slot="swatch"
         className={tw(
           "row-span-2 w-1 self-stretch rounded-full md:row-span-1",
           swatches[topicFor(meeting.id)],
@@ -211,7 +192,7 @@ function MeetingRow({ meeting, now }: { meeting: MeetingListItem; now: Date }) {
       <span
         id={`${id}-status`}
         className={tw(
-          "col-start-3 row-start-1 flex justify-end self-start type-small md:col-start-3 md:justify-end md:self-center",
+          "col-start-3 row-start-1 flex justify-end self-start type-small md:self-center",
         )}
       >
         <StatusBadge status={meeting.status} stalled={meeting.stalled} />
@@ -223,8 +204,7 @@ function MeetingRow({ meeting, now }: { meeting: MeetingListItem; now: Date }) {
           "md:contents",
         )}
       >
-        {/* The spaces between cells keep the computed description readable;
-            flex and grid layouts drop whitespace-only text. */}
+        {/* Spaces for the aria description; flex and grid ignore them. */}
         <span className={tw("md:justify-self-end")}>
           {meeting.durationSeconds === null
             ? placeholder
@@ -265,7 +245,7 @@ function SkeletonRows() {
         )}
       >
         {[0, 1, 2].map((row) => (
-          <div key={row} data-slot="skeleton-row" className={tw(rowGrid)}>
+          <div key={row} className={tw(rowGrid)}>
             <Skeleton
               className={tw(
                 "row-span-2 h-full min-h-9 w-1 rounded-full md:row-span-1",
@@ -277,7 +257,7 @@ function SkeletonRows() {
             </div>
             <Skeleton
               className={tw(
-                "col-start-3 row-start-1 h-3 w-14 md:col-start-3 md:justify-self-end",
+                "col-start-3 row-start-1 h-3 w-14 md:justify-self-end",
               )}
             />
             <div

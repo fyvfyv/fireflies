@@ -25,8 +25,7 @@ export async function transcribeWith(
       durationSeconds: result.durationInSeconds,
     };
   } catch (err) {
-    // The SDK throws on empty text, but a silent recording is a valid outcome:
-    // the pipeline turns it into a placeholder summary.
+    // The SDK throws on empty text, but silence is valid: the pipeline stores a placeholder summary.
     if (NoTranscriptGeneratedError.isInstance(err)) {
       return { text: "", segments: [] };
     }

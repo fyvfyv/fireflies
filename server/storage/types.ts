@@ -7,7 +7,6 @@ export const AUDIO_URL_TTL_MS = 60 * 60 * 1000;
 
 export type Storage = {
   readAudio(pathname: string): Promise<StoredAudio>;
-  /** A short-lived URL the browser can stream the audio from directly. */
   audioUrl(pathname: string): Promise<AudioUrl>;
   delete(pathname: string): Promise<void>;
 };

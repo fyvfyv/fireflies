@@ -10,23 +10,21 @@ import {
 } from "react";
 import { getAudioUrl } from "@/lib/api";
 
-export type PlayerStatus = "idle" | "loading" | "ready" | "error";
+type PlayerStatus = "idle" | "loading" | "ready" | "error";
 
 /** An explicit seek; `id` changes on every one, even to the same spot. */
-export type PlayerJump = { seconds: number; id: number };
+type PlayerJump = { seconds: number; id: number };
 
 type PlayerState = {
   status: PlayerStatus;
   playing: boolean;
-  /** Seconds; 0 while unknown. */
   duration: number;
   rate: number;
   jump: PlayerJump | null;
-  /** False without a provider or once the audio failed for good. */
   available: boolean;
 };
 
-export type PlayerActions = {
+type PlayerActions = {
   play: () => void;
   pause: () => void;
   toggle: () => void;
@@ -35,7 +33,7 @@ export type PlayerActions = {
   setRate: (rate: number) => void;
 };
 
-export type Player = PlayerState & PlayerActions & { currentTime: number };
+type Player = PlayerState & PlayerActions & { currentTime: number };
 
 const noop = () => {};
 const inertActions: PlayerActions = {
@@ -55,8 +53,7 @@ const inertState: PlayerState = {
   available: false,
 };
 
-// Split so that components which only start playback (timestamp marks) don't
-// re-render on every time update.
+// Split so seek-only consumers (timestamp marks) don't re-render on every time update.
 const StateContext = createContext(inertState);
 const TimeContext = createContext(0);
 const ActionsContext = createContext(inertActions);
@@ -73,20 +70,17 @@ export function usePlayerActions(): PlayerActions {
   return use(ActionsContext);
 }
 
-// HTMLMediaElement.readyState values.
 const HAVE_METADATA = 1;
 const HAVE_FUTURE_DATA = 3;
 
 const hasSource = (audio: HTMLAudioElement) => audio.hasAttribute("src");
 
-// A signed URL this close to its expiry is fetched again instead of used.
 const URL_EXPIRY_MARGIN_MS = 60_000;
 // Where idle callbacks don't exist (Safari), the URL is warmed after this.
 const WARM_UP_DELAY_MS = 1_500;
 
 type UrlRequest = {
   promise: Promise<string>;
-  /** Epoch ms; null until the request resolves. */
   expiresAt: number | null;
 };
 
@@ -97,15 +91,12 @@ type PlayerProviderProps = {
   meetingId: string;
   /** The meeting's measured duration; WebM recordings often report Infinity. */
   durationSeconds: number | null;
-  /** Space, j and l anywhere on the page. */
-  shortcuts?: boolean;
   children: ReactNode;
 };
 
 export function PlayerProvider({
   meetingId,
   durationSeconds,
-  shortcuts = true,
   children,
 }: PlayerProviderProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -121,8 +112,7 @@ export function PlayerProvider({
       ? durationSeconds
       : mediaDuration;
 
-  // Event handlers and actions read these instead of state, so the actions
-  // object stays stable for the lifetime of the provider.
+  // Handlers and actions read refs instead of state, so `actions` stays stable.
   const statusRef = useRef(status);
   const durationRef = useRef(duration);
   durationRef.current = duration;
@@ -132,8 +122,6 @@ export function PlayerProvider({
   const pendingSeek = useRef<number | null>(null);
   const urlRequest = useRef<UrlRequest | null>(null);
   const refreshed = useRef(false);
-  // Set once the provider unmounts; pending URL requests must not touch the
-  // element after that.
   const disposed = useRef(false);
 
   const setStatus = useCallback((next: PlayerStatus) => {
@@ -147,8 +135,7 @@ export function PlayerProvider({
     setStatus("error");
   }, [setStatus]);
 
-  // The URL is signed and expires, so it is only requested when needed, and
-  // a warmed one that is about to expire is replaced before use.
+  // Signed URLs expire: request lazily, and replace a warmed one that is about to expire.
   const requestUrl = useCallback(() => {
     const cached = urlRequest.current;
     if (cached && !expiresSoon(cached)) return cached.promise;
@@ -160,7 +147,6 @@ export function PlayerProvider({
       }),
     };
     urlRequest.current = request;
-    // Forget a failed request so a later attempt asks again.
     request.promise.catch(() => {
       if (urlRequest.current === request) urlRequest.current = null;
     });
@@ -173,19 +159,14 @@ export function PlayerProvider({
       try {
         await audio.play();
       } catch (err) {
-        // AbortError: a pause or a new source interrupted play(). Nothing to
-        // report.
-        // NotSupportedError: the source didn't load. The element's error
-        // event already refreshes the URL (and resumes, since playback is
-        // still wanted) or reports the audio unavailable.
+        // AbortError: interrupted by a pause or new source; NotSupportedError: onError handles it.
         if (
           err instanceof DOMException &&
           (err.name === "AbortError" || err.name === "NotSupportedError")
         ) {
           return;
         }
-        // Autoplay policy or similar: stay paused. Broken media reports
-        // itself through the element's error event instead.
+        // Autoplay policy or similar: stay paused.
         wantsPlay.current = false;
         setPlaying(false);
         if (statusRef.current === "loading") {
@@ -241,7 +222,6 @@ export function PlayerProvider({
         pendingSeek.current = null;
         audio.currentTime = target;
       } else {
-        // Applied once the element knows its metadata.
         pendingSeek.current = target;
       }
       if (options?.play) play();
@@ -268,8 +248,7 @@ export function PlayerProvider({
   const onError = () => {
     const audio = audioRef.current;
     if (!audio || !hasSource(audio) || statusRef.current === "error") return;
-    // The first failure is most likely an expired signature: get a new URL
-    // and resume from the same spot.
+    // The first failure is most likely an expired signature: refresh once and resume.
     if (refreshed.current) {
       fail();
       return;
@@ -291,6 +270,11 @@ export function PlayerProvider({
     );
   };
 
+  const readMediaDuration = () => {
+    const value = audioRef.current?.duration ?? Number.NaN;
+    setMediaDuration(Number.isFinite(value) && value > 0 ? value : 0);
+  };
+
   const onLoadedMetadata = () => {
     const audio = audioRef.current;
     if (!audio) return;
@@ -304,11 +288,6 @@ export function PlayerProvider({
     }
   };
 
-  const readMediaDuration = () => {
-    const value = audioRef.current?.duration ?? Number.NaN;
-    setMediaDuration(Number.isFinite(value) && value > 0 ? value : 0);
-  };
-
   const onTimeUpdate = () => {
     const audio = audioRef.current;
     // Until a pending seek lands, the element still reports the old spot.
@@ -317,12 +296,7 @@ export function PlayerProvider({
     setCurrentTime(audio.currentTime);
   };
 
-  const markReady = () => {
-    if (statusRef.current === "loading") setStatus("ready");
-  };
-
-  // A detached <audio> keeps playing, so leaving the page must stop it.
-  // Resetting the flag on mount keeps StrictMode's remount working.
+  // A detached <audio> keeps playing; resetting `disposed` on mount survives StrictMode's remount.
   useEffect(() => {
     disposed.current = false;
     const audio = audioRef.current;
@@ -338,7 +312,6 @@ export function PlayerProvider({
   }, []);
 
   useEffect(() => {
-    // Warm the URL once the page settles so the first play starts sooner.
     const warm = () => {
       requestUrl().catch(noop);
     };
@@ -351,10 +324,15 @@ export function PlayerProvider({
   }, [requestUrl]);
 
   useEffect(() => {
-    if (!shortcuts) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.metaKey || event.ctrlKey) return;
-      if (event.altKey) return;
+      if (
+        event.defaultPrevented ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.altKey
+      ) {
+        return;
+      }
       const target = event.target instanceof Element ? event.target : null;
       if (event.key === " ") {
         if (target && isControl(target)) return;
@@ -368,7 +346,7 @@ export function PlayerProvider({
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [shortcuts, actions]);
+  }, [actions]);
 
   const state = useMemo<PlayerState>(
     () => ({
@@ -393,14 +371,12 @@ export function PlayerProvider({
             preload="metadata"
             onPlay={() => setPlaying(true)}
             onPlaying={() => {
-              // Playback proves the URL works; a later expiry may refresh again.
               refreshed.current = false;
               setPlaying(true);
               setStatus("ready");
             }}
             onPause={() => {
-              // Also covers pauses from outside the page (media keys), so the
-              // next toggle plays instead of pausing again.
+              // Media keys pause from outside the page; reset so the next toggle plays.
               wantsPlay.current = false;
               setPlaying(false);
             }}
@@ -411,7 +387,9 @@ export function PlayerProvider({
             onWaiting={() => {
               if (wantsPlay.current) setStatus("loading");
             }}
-            onCanPlay={markReady}
+            onCanPlay={() => {
+              if (statusRef.current === "loading") setStatus("ready");
+            }}
             onLoadedMetadata={onLoadedMetadata}
             onDurationChange={readMediaDuration}
             onTimeUpdate={onTimeUpdate}
@@ -426,9 +404,7 @@ export function PlayerProvider({
   );
 }
 
-// Space belongs to controls that use it (text fields, buttons, links, menus,
-// dialogs). The radix slider thumb and tabs ignore Space, so it plays and
-// pauses there; radix tabs are buttons, hence the `:not`.
+// Radix slider thumbs and tabs ignore Space, so it toggles playback there; tabs are buttons, hence `:not`.
 const CONTROLS = [
   "input",
   "textarea",
@@ -463,7 +439,6 @@ const NON_TEXT_INPUTS = new Set([
   "file",
 ]);
 
-// Letters belong to text entry and to menus (typeahead).
 function acceptsTyping(target: Element) {
   if (target instanceof HTMLInputElement) {
     return !NON_TEXT_INPUTS.has(target.type);

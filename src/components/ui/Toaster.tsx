@@ -16,43 +16,28 @@ import {
   toast,
 } from "./toastStore";
 
-export type { ToastInput, ToastTone } from "./toastStore";
-export { dismissToast, toast } from "./toastStore";
+const toastApi = { toast };
 
-const toastApi = { toast, dismiss: dismissToast };
-
-/** `toast({ title, tone })` shows a notification in the app's Toaster. */
 export function useToast() {
   return toastApi;
 }
 
-/**
- * Lifts toasts by `offset` px while the calling component is mounted, so they
- * clear bottom-docked UI such as the player bar.
- */
 export function useToastOffset(offset: number) {
   useEffect(() => liftToasts(offset), [offset]);
 }
 
-type ToasterProps = {
-  /** Default bottom lift in px when no mounted page asks for one. */
-  offset?: number;
-};
-
-export function Toaster({ offset = 0 }: ToasterProps) {
-  const { toasts, offset: lifted } = useSyncExternalStore(
+export function Toaster() {
+  const { toasts, offset } = useSyncExternalStore(
     subscribeToasts,
     getToastState,
     getToastState,
   );
-  // Toasts under the pointer, so losing focus doesn't restart a hovered
-  // toast's countdown. Held weakly: a toast can unmount while hovered.
+  // Weak: a toast can unmount while hovered.
   const hovered = useRef(new WeakSet<Element>());
-  const style = { "--toast-offset": `${lifted ?? offset}px` } as CSSProperties;
+  const style = { "--toast-offset": `${offset ?? 0}px` } as CSSProperties;
 
   return (
-    // Always rendered: screen readers only announce changes to a live region
-    // that already exists.
+    // Always rendered: screen readers only announce changes to an existing live region.
     <section
       aria-label="Notifications"
       aria-live="polite"
@@ -63,8 +48,6 @@ export function Toaster({ offset = 0 }: ToasterProps) {
       )}
     >
       {toasts.map((item) => (
-        // Pointing at or focusing a toast holds its countdown, so it can't
-        // vanish mid-read. The dismiss button stays the only control.
         // biome-ignore lint/a11y/noStaticElementInteractions: the handlers only pause the auto-dismiss timer
         <div
           key={item.id}
@@ -75,16 +58,14 @@ export function Toaster({ offset = 0 }: ToasterProps) {
           }}
           onPointerLeave={(event) => {
             hovered.current.delete(event.currentTarget);
-            // A focused dismiss button still holds the toast.
             if (!event.currentTarget.contains(document.activeElement)) {
               resumeToast(item.id);
             }
           }}
           onFocus={() => pauseToast(item.id)}
           onBlur={(event) => {
-            const next = event.relatedTarget as Node | null;
             if (
-              !event.currentTarget.contains(next) &&
+              !event.currentTarget.contains(event.relatedTarget) &&
               !hovered.current.has(event.currentTarget)
             ) {
               resumeToast(item.id);

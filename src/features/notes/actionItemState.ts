@@ -1,18 +1,14 @@
 import type { ActionItem } from "@shared/schemas";
 import { useCallback, useSyncExternalStore } from "react";
 
-export type OwnerGroup = {
-  /** null collects the unassigned items. */
+type OwnerGroup = {
   owner: string | null;
   entries: { item: ActionItem; index: number }[];
 };
 
-/**
- * Named owners alphabetically, then "Unassigned". Owners are matched without
- * case because the model is not consistent about capitalising names.
- */
+/** Owners match case-insensitively: the model capitalises names inconsistently. */
 export function groupByOwner(items: readonly ActionItem[]): OwnerGroup[] {
-  const named = new Map<string, OwnerGroup>();
+  const named = new Map<string, OwnerGroup & { owner: string }>();
   const unassigned: OwnerGroup = { owner: null, entries: [] };
   items.forEach((item, index) => {
     const owner = item.owner?.trim();
@@ -25,25 +21,19 @@ export function groupByOwner(items: readonly ActionItem[]): OwnerGroup[] {
     group.entries.push({ item, index });
     named.set(key, group);
   });
-  const groups = [...named.values()].sort((a, b) =>
-    (a.owner ?? "").localeCompare(b.owner ?? "", "en", { sensitivity: "base" }),
+  const groups: OwnerGroup[] = [...named.values()].sort((a, b) =>
+    a.owner.localeCompare(b.owner, "en", { sensitivity: "base" }),
   );
   if (unassigned.entries.length > 0) groups.push(unassigned);
   return groups;
 }
 
-/**
- * Identifies an item for its checkbox. The task text is part of the key, so
- * regenerated notes don't show old checks on different tasks.
- */
+/** Includes the task text, so regenerated notes don't inherit checks for other tasks. */
 export function actionItemKey(item: ActionItem, index: number): string {
   return `${index}:${item.task}`;
 }
 
-// Checked items live in localStorage per meeting. A module-level cache keeps
-// the notes tab and the action items tab in step without a provider; it is
-// keyed by the stored string, so writes from elsewhere are picked up and an
-// unchanged value keeps the same snapshot.
+// Module-level cache; each snapshot keeps its raw string so useSyncExternalStore sees a stable value.
 const EMPTY: ReadonlySet<string> = new Set();
 type Entry = { raw: string | null; done: ReadonlySet<string> };
 const cache = new Map<string, Entry>();
@@ -86,8 +76,7 @@ function write(meetingId: string, done: ReadonlySet<string>) {
     localStorage.setItem(storageKey(meetingId), raw);
     cache.set(meetingId, { raw, done });
   } catch {
-    // Storage is full or blocked: keep the checks for this session by caching
-    // them against the value that is still stored.
+    // Storage is full or blocked: keep the checks for this session.
     cache.set(meetingId, { raw: readRaw(meetingId), done });
   }
   for (const listener of listeners) listener();
@@ -95,7 +84,6 @@ function write(meetingId: string, done: ReadonlySet<string>) {
 
 function subscribe(listener: () => void) {
   listeners.add(listener);
-  // Another tab checked an item.
   const onStorage = (event: StorageEvent) => {
     if (event.key === null || event.key.startsWith("recap:done:")) listener();
   };

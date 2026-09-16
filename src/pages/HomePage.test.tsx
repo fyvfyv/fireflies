@@ -1,5 +1,5 @@
 import { MAX_AUDIO_BYTES } from "@shared/constants";
-import type { Meeting, MeetingListItem, MeetingStatus } from "@shared/schemas";
+import type { Meeting, MeetingListItem } from "@shared/schemas";
 import { act, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -24,33 +24,41 @@ vi.mock("@/lib/api", async (importOriginal) => ({
 vi.mock("@/lib/upload", () => ({ uploadAudio: vi.fn() }));
 
 const mockedList = vi.mocked(listMeetings);
+const mockedUpload = vi.mocked(uploadAudio);
 
 const transcribing = meetingListItemFixture({
   id: "t1",
   title: "In flight",
   status: "transcribing",
-  overviewSnippet: null,
-  actionItemCount: 0,
 });
+const uploaded = {
+  pathname: "recordings/u1.webm",
+  sizeBytes: 1,
+  contentType: "audio/webm",
+};
+const networkDown = new ApiError({
+  status: 0,
+  code: "network",
+  message: "Network down",
+  retryable: true,
+});
+
+function deferred<T>() {
+  let resolve: (value: T) => void = () => {};
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 
 beforeEach(() => {
   mockedList.mockReset();
 });
 
 describe("HomePage", () => {
-  it("renders meetings from the API", async () => {
-    mockedList.mockResolvedValue([meetingListItemFixture()]);
-
-    renderWithRouter(<HomePage />);
-
-    expect(
-      await screen.findByRole("link", { name: /Weekly sync/ }),
-    ).toBeInTheDocument();
-    expect(mockedList).toHaveBeenCalledTimes(1);
-  });
-
-  it("leads with the hero and the recorder", async () => {
-    mockedList.mockResolvedValue([]);
+  it("leads with the hero and the recorder, then loads the meetings", async () => {
+    const { promise, resolve } = deferred<MeetingListItem[]>();
+    mockedList.mockReturnValue(promise);
 
     renderWithRouter(<HomePage />);
 
@@ -58,23 +66,40 @@ describe("HomePage", () => {
       screen.getByRole("heading", { level: 1, name: /Record the meeting/ }),
     ).toBeVisible();
     expect(screen.getByRole("region", { name: "Recorder" })).toBeVisible();
-    expect(await screen.findByText("No meetings yet")).toBeInTheDocument();
-  });
-
-  it("shows skeleton rows until the list loads", async () => {
-    let resolve: (value: MeetingListItem[]) => void = () => {};
-    mockedList.mockReturnValue(
-      new Promise((done) => {
-        resolve = done;
-      }),
-    );
-
-    renderWithRouter(<HomePage />);
-
     expect(screen.getByText("Loading meetings…")).toBeInTheDocument();
+
     await act(async () => resolve([meetingListItemFixture()]));
+
     expect(screen.queryByText("Loading meetings…")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Weekly sync" })).toBeVisible();
+  });
+
+  it("shows a load error with a retry", async () => {
+    mockedList
+      .mockRejectedValueOnce(networkDown)
+      .mockResolvedValue([meetingListItemFixture()]);
+    const user = userEvent.setup();
+    renderWithRouter(<HomePage />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Network down");
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+
+    expect(
+      await screen.findByRole("link", { name: "Weekly sync" }),
+    ).toBeVisible();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("explains when the browser can't record, offering the options once", async () => {
+    mockedList.mockResolvedValue([]);
+    renderWithRouter(<HomePage />);
+
+    expect(
+      await screen.findByText("Recording isn't available in this browser"),
+    ).toBeVisible();
+    expect(
+      screen.getAllByRole("button", { name: "Try a 2-minute sample" }),
+    ).toHaveLength(1);
   });
 
   describe("polling", () => {
@@ -82,114 +107,67 @@ describe("HomePage", () => {
       vi.useFakeTimers({ shouldAdvanceTime: true });
     });
 
-    it.each(["transcribing", "transcribed", "summarizing"] as const)(
-      "refetches every 5 s while a meeting is %s",
-      async (status) => {
-        mockedList.mockResolvedValue([{ ...transcribing, status }]);
+    const tick = () => act(() => vi.advanceTimersByTimeAsync(5_000));
 
-        renderWithRouter(<HomePage />);
-        await screen.findByText("In flight");
-        expect(mockedList).toHaveBeenCalledTimes(1);
-
-        await act(() => vi.advanceTimersByTimeAsync(5_000));
-        expect(mockedList).toHaveBeenCalledTimes(2);
-
-        await act(() => vi.advanceTimersByTimeAsync(5_000));
-        expect(mockedList).toHaveBeenCalledTimes(3);
-      },
-    );
-
-    it.each(["uploaded", "done", "failed"] as MeetingStatus[])(
-      "does not poll for a %s meeting",
-      async (status) => {
-        mockedList.mockResolvedValue([{ ...transcribing, status }]);
-
-        renderWithRouter(<HomePage />);
-        await screen.findByText("In flight");
-
-        await act(() => vi.advanceTimersByTimeAsync(10_000));
-        expect(mockedList).toHaveBeenCalledTimes(1);
-      },
-    );
-
-    it("stops once nothing is processing", async () => {
+    it("refetches every 5 s until nothing is processing", async () => {
       mockedList
         .mockResolvedValueOnce([transcribing])
+        .mockResolvedValueOnce([{ ...transcribing, status: "summarizing" }])
         .mockResolvedValue([{ ...transcribing, status: "done" }]);
+      renderWithRouter(<HomePage />);
+      await screen.findByText("Transcribing");
 
+      await tick();
+      expect(await screen.findByText("Writing notes")).toBeInTheDocument();
+      await tick();
+      expect(await screen.findByText("Done")).toBeInTheDocument();
+      await tick();
+      await tick();
+
+      expect(mockedList).toHaveBeenCalledTimes(3);
+    });
+
+    it.each([
+      ["uploaded", { status: "uploaded" }],
+      ["done", { status: "done" }],
+      ["failed", { status: "failed" }],
+      ["stalled", { stalled: true }],
+    ] as const)("does not poll for a %s meeting", async (_case, overrides) => {
+      mockedList.mockResolvedValue([{ ...transcribing, ...overrides }]);
       renderWithRouter(<HomePage />);
       await screen.findByText("In flight");
 
-      await act(() => vi.advanceTimersByTimeAsync(5_000));
-      expect(await screen.findByText("Done")).toBeInTheDocument();
+      await tick();
+      await tick();
 
-      await act(() => vi.advanceTimersByTimeAsync(15_000));
-      expect(mockedList).toHaveBeenCalledTimes(2);
-    });
-
-    it("does not poll when the only in-progress row is stalled", async () => {
-      mockedList.mockResolvedValue([{ ...transcribing, stalled: true }]);
-
-      renderWithRouter(<HomePage />);
-      await screen.findByText("Interrupted");
-
-      await act(() => vi.advanceTimersByTimeAsync(10_000));
       expect(mockedList).toHaveBeenCalledTimes(1);
     });
 
-    it("keeps polling through a failed refetch", async () => {
+    it("keeps the rows and polling through a failed refetch", async () => {
       mockedList
         .mockResolvedValueOnce([transcribing])
-        .mockRejectedValueOnce(
-          new ApiError({
-            status: 0,
-            code: "network",
-            message: "Network down",
-            retryable: true,
-          }),
-        )
+        .mockRejectedValueOnce(networkDown)
         .mockResolvedValue([transcribing]);
-
       renderWithRouter(<HomePage />);
       await screen.findByText("In flight");
 
-      await act(() => vi.advanceTimersByTimeAsync(5_000));
+      await tick();
       expect(screen.getByRole("alert")).toHaveTextContent("Network down");
       expect(screen.getByText("In flight")).toBeInTheDocument();
 
-      await act(() => vi.advanceTimersByTimeAsync(5_000));
+      await tick();
       expect(mockedList).toHaveBeenCalledTimes(3);
       expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     });
   });
 
-  it("shows a load error with a retry", async () => {
-    mockedList
-      .mockRejectedValueOnce(
-        new ApiError({
-          status: 500,
-          code: "internal",
-          message: "Database unavailable",
-          retryable: true,
-        }),
-      )
-      .mockResolvedValue([meetingListItemFixture()]);
-    const user = userEvent.setup();
-
-    renderWithRouter(<HomePage />);
-
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Database unavailable",
-    );
-    await user.click(screen.getByRole("button", { name: "Try again" }));
-    expect(
-      await screen.findByRole("link", { name: /Weekly sync/ }),
-    ).toBeInTheDocument();
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-  });
-
-  describe("recording", () => {
+  describe("with a microphone", () => {
     const trackStop = vi.fn();
+    const audio = new File(["x"], "call.m4a", { type: "audio/mp4" });
+    const text = new File(["x"], "notes.txt", { type: "text/plain" });
+    const drag = (file: File) => ({
+      dataTransfer: { types: ["Files"], files: [file], dropEffect: "none" },
+    });
 
     beforeEach(() => {
       mockedList.mockResolvedValue([meetingListItemFixture()]);
@@ -202,11 +180,7 @@ describe("HomePage", () => {
           })),
         },
       });
-      vi.mocked(uploadAudio).mockReset().mockResolvedValue({
-        pathname: "recordings/u1.webm",
-        sizeBytes: 1,
-        contentType: "audio/webm",
-      });
+      mockedUpload.mockReset().mockResolvedValue(uploaded);
       vi.mocked(createMeeting)
         .mockReset()
         .mockResolvedValue(meetingFixture({ id: "m1", status: "uploaded" }));
@@ -219,28 +193,48 @@ describe("HomePage", () => {
       Reflect.deleteProperty(navigator, "mediaDevices");
     });
 
-    async function recordAndSave() {
-      const user = userEvent.setup();
+    async function renderPage() {
+      // Otherwise the picker's accept filter drops invalid files before validation.
+      const user = userEvent.setup({ applyAccept: false });
       renderWithRouter(<HomePage />);
-      await user.click(
-        await screen.findByRole("button", { name: "Start recording" }),
-      );
-      await user.click(
-        await screen.findByRole("button", { name: "Stop recording" }),
-      );
-      await user.click(
-        screen.getByRole("button", { name: "Save and transcribe" }),
-      );
-      return user;
+      await screen.findByRole("link", { name: "Weekly sync" });
+      return {
+        user,
+        start: async () => {
+          await user.click(
+            screen.getByRole("button", { name: "Start recording" }),
+          );
+          await screen.findByRole("button", { name: "Stop recording" });
+        },
+        stop: () =>
+          user.click(screen.getByRole("button", { name: "Stop recording" })),
+        save: () =>
+          user.click(
+            screen.getByRole("button", { name: "Save and transcribe" }),
+          ),
+        pick: (file: File) =>
+          user.upload(screen.getByLabelText("Audio file"), file),
+      };
     }
+
+    const location = () => screen.queryByTestId("location");
+    const deferUpload = () => {
+      const upload = deferred<typeof uploaded>();
+      mockedUpload.mockReturnValue(upload.promise);
+      return () => act(async () => upload.resolve(uploaded));
+    };
 
     it("records, saves and opens the new meeting", async () => {
       const confirm = vi.spyOn(window, "confirm");
-      await recordAndSave();
+      const page = await renderPage();
+
+      await page.start();
+      await page.stop();
+      await page.save();
 
       expect(await screen.findByTestId("location")).toHaveTextContent("/m/m1");
       expect(confirm).not.toHaveBeenCalled();
-      expect(uploadAudio).toHaveBeenCalledWith(expect.any(Blob), "audio/webm");
+      expect(mockedUpload).toHaveBeenCalledWith(expect.any(Blob), "audio/webm");
       expect(createMeeting).toHaveBeenCalledWith(
         expect.objectContaining({ source: "mic", title: undefined }),
       );
@@ -248,44 +242,192 @@ describe("HomePage", () => {
       expect(trackStop).toHaveBeenCalled();
     });
 
-    it("uploads an audio file and opens the new meeting", async () => {
-      const user = userEvent.setup();
-      renderWithRouter(<HomePage />);
-      const file = new File(["x"], "call.m4a", { type: "audio/mp4" });
+    it("shows the upload and create steps while saving", async () => {
+      const finishUpload = deferUpload();
+      const create = deferred<Meeting>();
+      vi.mocked(createMeeting).mockReturnValue(create.promise);
+      const page = await renderPage();
+      await page.start();
+      await page.stop();
+      await page.save();
 
-      expect(await screen.findByText("No microphone?")).toBeVisible();
-      await user.upload(screen.getByLabelText("Audio file"), file);
+      expect(screen.getByRole("status")).toHaveTextContent("Uploading audio…");
+      expect(
+        screen.getByRole("button", { name: "Uploading audio…" }),
+      ).toHaveAttribute("aria-busy", "true");
+      expect(screen.getByRole("button", { name: "Discard" })).toBeDisabled();
 
-      expect(await screen.findByTestId("location")).toHaveTextContent("/m/m1");
-      expect(uploadAudio).toHaveBeenCalledWith(file, "audio/mp4");
-      expect(createMeeting).toHaveBeenCalledWith(
-        expect.objectContaining({ source: "upload", title: undefined }),
+      await finishUpload();
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "Creating the meeting…",
       );
+      expect(location()).not.toBeInTheDocument();
+
+      await act(async () =>
+        create.resolve(meetingFixture({ id: "m1", status: "uploaded" })),
+      );
+      expect(await screen.findByTestId("location")).toHaveTextContent("/m/m1");
     });
 
-    it("offers the mic-free options in the empty state", async () => {
+    it("shows a failed save with a retry", async () => {
+      vi.mocked(createMeeting).mockRejectedValueOnce(networkDown);
+      const page = await renderPage();
+      await page.start();
+      await page.stop();
+      await page.save();
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "Network down",
+      );
+      await page.user.click(screen.getByRole("button", { name: "Retry" }));
+
+      expect(await screen.findByTestId("location")).toHaveTextContent("/m/m1");
+      expect(mockedUpload).toHaveBeenCalledTimes(1);
+    });
+
+    it("forgets a failed save when the recording is discarded", async () => {
+      mockedUpload.mockRejectedValueOnce(new Error("offline"));
+      const page = await renderPage();
+      await page.start();
+      await page.stop();
+      await page.save();
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        /Couldn't upload/,
+      );
+
+      await page.user.click(screen.getByRole("button", { name: "Discard" }));
+
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Start recording" }),
+      ).toBeEnabled();
+    });
+
+    it("hides the mic-free options while a recording is unsaved", async () => {
       mockedList.mockResolvedValue([]);
-
+      const user = userEvent.setup();
       renderWithRouter(<HomePage />);
-
       const meetings = screen.getByRole("region", { name: "Meetings" });
       expect(
-        await within(meetings).findByText("No meetings yet"),
+        await within(meetings).findByRole("button", {
+          name: "Try a 2-minute sample",
+        }),
+      ).toBeVisible();
+      expect(screen.getByText("No microphone?")).toBeVisible();
+
+      await user.click(screen.getByRole("button", { name: "Start recording" }));
+      const stop = await screen.findByRole("button", {
+        name: "Stop recording",
+      });
+      expect(screen.queryByText("No microphone?")).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: /sample/ }),
+      ).not.toBeInTheDocument();
+
+      await user.click(stop);
+
+      expect(
+        screen.getByRole("button", { name: "Save and transcribe" }),
       ).toBeVisible();
       expect(
-        within(meetings).getByRole("button", { name: "Try a 2-minute sample" }),
-      ).toBeVisible();
+        screen.queryByRole("button", { name: /sample/ }),
+      ).not.toBeInTheDocument();
+    });
+
+    describe("leaving", () => {
+      it("asks before a link leaves an unsaved recording", async () => {
+        const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false);
+        const page = await renderPage();
+        await page.start();
+        const link = screen.getByRole("link", { name: "Weekly sync" });
+
+        await page.user.click(link);
+
+        expect(confirm).toHaveBeenCalledTimes(1);
+        expect(location()).not.toBeInTheDocument();
+        expect(
+          screen.getByRole("button", { name: "Stop recording" }),
+        ).toBeVisible();
+
+        confirm.mockReturnValueOnce(true);
+        await page.user.click(link);
+
+        expect(await screen.findByTestId("location")).toHaveTextContent("/m/");
+        expect(trackStop).toHaveBeenCalled();
+      });
+
+      it("asks before a link leaves a recording that is still saving", async () => {
+        const finishUpload = deferUpload();
+        const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+        const page = await renderPage();
+        await page.start();
+        await page.stop();
+        await page.save();
+
+        await page.user.click(
+          screen.getByRole("link", { name: "Weekly sync" }),
+        );
+        expect(confirm).toHaveBeenCalledTimes(1);
+        expect(location()).not.toBeInTheDocument();
+
+        await finishUpload();
+        expect(await screen.findByTestId("location")).toHaveTextContent(
+          "/m/m1",
+        );
+        expect(confirm).toHaveBeenCalledTimes(1);
+      });
+
+      it("leaves without asking when nothing is recorded", async () => {
+        const confirm = vi.spyOn(window, "confirm");
+        const page = await renderPage();
+
+        await page.user.click(
+          screen.getByRole("link", { name: "Weekly sync" }),
+        );
+
+        expect(await screen.findByTestId("location")).toHaveTextContent("/m/");
+        expect(confirm).not.toHaveBeenCalled();
+      });
+    });
+
+    describe("feedback from other sources", () => {
+      it("drops a failed file upload's retry once a recording starts", async () => {
+        mockedUpload.mockRejectedValueOnce(new Error("offline"));
+        const page = await renderPage();
+        await page.pick(audio);
+        expect(await screen.findByRole("alert")).toHaveTextContent(
+          /Couldn't upload/,
+        );
+
+        await page.start();
+
+        expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      });
+
+      it("drops a sample still loading once a recording starts", async () => {
+        const sample = deferred<unknown>();
+        vi.stubGlobal("fetch", () => sample.promise);
+        const page = await renderPage();
+        await page.user.click(
+          screen.getByRole("button", { name: "Try a 2-minute sample" }),
+        );
+
+        await page.start();
+        await act(async () =>
+          sample.resolve({
+            ok: true,
+            blob: async () => new Blob(["x"], { type: "audio/webm" }),
+          }),
+        );
+
+        expect(mockedUpload).not.toHaveBeenCalled();
+        expect(location()).not.toBeInTheDocument();
+      });
     });
 
     describe("dropping a file", () => {
-      const audio = new File(["x"], "call.m4a", { type: "audio/mp4" });
-      const drag = (file: File) => ({
-        dataTransfer: { types: ["Files"], files: [file], dropEffect: "none" },
-      });
-
       it("uploads a dropped audio file and opens the new meeting", async () => {
-        renderWithRouter(<HomePage />);
-        await screen.findByRole("link", { name: "Weekly sync" });
+        await renderPage();
 
         fireEvent.dragEnter(document.body, drag(audio));
         expect(
@@ -296,366 +438,75 @@ describe("HomePage", () => {
         expect(await screen.findByTestId("location")).toHaveTextContent(
           "/m/m1",
         );
-        expect(uploadAudio).toHaveBeenCalledWith(audio, "audio/mp4");
+        expect(mockedUpload).toHaveBeenCalledWith(audio, "audio/mp4");
         expect(createMeeting).toHaveBeenCalledWith(
-          expect.objectContaining({ source: "upload" }),
+          expect.objectContaining({ source: "upload", title: undefined }),
         );
       });
 
-      it("explains why a dropped file can't be used", async () => {
-        const user = userEvent.setup();
-        renderWithRouter(<HomePage />);
-        await screen.findByRole("link", { name: "Weekly sync" });
+      it("explains a rejected drop until a recording starts", async () => {
+        const page = await renderPage();
 
-        fireEvent.drop(
-          document.body,
-          drag(new File(["x"], "notes.txt", { type: "text/plain" })),
-        );
+        fireEvent.drop(document.body, drag(text));
 
         expect(await screen.findByRole("alert")).toHaveTextContent(
           "Choose an audio file (WebM, M4A, MP3, WAV or OGG).",
         );
-        expect(uploadAudio).not.toHaveBeenCalled();
+        expect(mockedUpload).not.toHaveBeenCalled();
 
-        // Starting a recording clears the message.
-        await user.click(
-          screen.getByRole("button", { name: "Start recording" }),
-        );
-        await screen.findByRole("button", { name: "Stop recording" });
+        await page.start();
         expect(screen.queryByRole("alert")).not.toBeInTheDocument();
       });
 
-      it("replaces a failed save with the dropped file's problem", async () => {
-        vi.mocked(uploadAudio).mockRejectedValueOnce(new Error("offline"));
-        const user = userEvent.setup();
-        renderWithRouter(<HomePage />);
-        await screen.findByRole("link", { name: "Weekly sync" });
-        await user.upload(screen.getByLabelText("Audio file"), audio);
+      it("shows the newest file problem, whichever way the file came", async () => {
+        mockedUpload.mockRejectedValueOnce(new Error("offline"));
+        const page = await renderPage();
+        await page.pick(audio);
         expect(await screen.findByRole("alert")).toHaveTextContent(
           /Couldn't upload/,
         );
 
-        fireEvent.drop(
-          document.body,
-          drag(new File(["x"], "notes.txt", { type: "text/plain" })),
-        );
-
+        fireEvent.drop(document.body, drag(text));
         expect(screen.getByRole("alert")).toHaveTextContent(
-          "Choose an audio file (WebM, M4A, MP3, WAV or OGG).",
+          "Choose an audio file",
         );
         expect(
           screen.queryByRole("button", { name: "Retry" }),
         ).not.toBeInTheDocument();
-      });
-
-      it("drops an old drop message when a picked file is rejected", async () => {
-        // The picker's accept filter would drop the file before validation.
-        const user = userEvent.setup({ applyAccept: false });
-        renderWithRouter(<HomePage />);
-        await screen.findByRole("link", { name: "Weekly sync" });
-        fireEvent.drop(
-          document.body,
-          drag(new File(["x"], "notes.txt", { type: "text/plain" })),
-        );
-        expect(await screen.findByRole("alert")).toBeInTheDocument();
 
         const big = new File(["x"], "big.mp3", { type: "audio/mpeg" });
         Object.defineProperty(big, "size", { value: MAX_AUDIO_BYTES + 1 });
-        await user.upload(screen.getByLabelText("Audio file"), big);
-
+        await page.pick(big);
         expect(screen.getByRole("alert")).toHaveTextContent(/over 25 MB/);
       });
 
-      it("ignores drops while a recording is in progress", async () => {
-        const user = userEvent.setup();
-        renderWithRouter(<HomePage />);
-        await user.click(
-          await screen.findByRole("button", { name: "Start recording" }),
-        );
-        await screen.findByRole("button", { name: "Stop recording" });
+      it("ignores drops while a recording is running or unsaved", async () => {
+        const page = await renderPage();
+        await page.start();
 
         fireEvent.dragEnter(document.body, drag(audio));
         fireEvent.drop(document.body, drag(audio));
-
         expect(
           screen.queryByText("Drop an audio file to transcribe it"),
         ).not.toBeInTheDocument();
-        expect(uploadAudio).not.toHaveBeenCalled();
-      });
 
-      it("ignores drops while an unsaved recording waits", async () => {
-        const user = userEvent.setup();
-        renderWithRouter(<HomePage />);
-        await user.click(
-          await screen.findByRole("button", { name: "Start recording" }),
-        );
-        await user.click(
-          await screen.findByRole("button", { name: "Stop recording" }),
-        );
-
+        await page.stop();
         fireEvent.drop(document.body, drag(audio));
 
-        expect(uploadAudio).not.toHaveBeenCalled();
-        expect(screen.queryByTestId("location")).not.toBeInTheDocument();
+        expect(mockedUpload).not.toHaveBeenCalled();
+        expect(location()).not.toBeInTheDocument();
       });
 
       it("ignores drops while a save is running", async () => {
-        vi.mocked(uploadAudio).mockReturnValue(new Promise(() => {}));
-        renderWithRouter(<HomePage />);
-        await screen.findByRole("link", { name: "Weekly sync" });
+        mockedUpload.mockReturnValue(new Promise(() => {}));
+        await renderPage();
         fireEvent.drop(document.body, drag(audio));
         await screen.findByText("Uploading audio…");
 
         fireEvent.drop(document.body, drag(audio));
 
-        expect(uploadAudio).toHaveBeenCalledTimes(1);
+        expect(mockedUpload).toHaveBeenCalledTimes(1);
       });
     });
-
-    it("hides the mic-free options while recording", async () => {
-      const user = userEvent.setup();
-      renderWithRouter(<HomePage />);
-
-      await user.click(
-        await screen.findByRole("button", { name: "Start recording" }),
-      );
-      await screen.findByRole("button", { name: "Stop recording" });
-
-      expect(screen.queryByText("No microphone?")).not.toBeInTheDocument();
-    });
-
-    it("shows the upload and create steps while saving", async () => {
-      let finishUpload: (
-        value: Awaited<ReturnType<typeof uploadAudio>>,
-      ) => void = () => {};
-      vi.mocked(uploadAudio).mockReturnValue(
-        new Promise((resolve) => {
-          finishUpload = resolve;
-        }),
-      );
-
-      await recordAndSave();
-
-      expect(await screen.findByRole("status")).toHaveTextContent(
-        "Uploading audio…",
-      );
-      expect(
-        screen.getByRole("button", { name: "Uploading audio…" }),
-      ).toHaveAttribute("aria-busy", "true");
-      expect(screen.getByRole("button", { name: "Discard" })).toBeDisabled();
-
-      let finishCreate: (value: Meeting) => void = () => {};
-      vi.mocked(createMeeting).mockReturnValue(
-        new Promise((resolve) => {
-          finishCreate = resolve;
-        }),
-      );
-      await act(async () =>
-        finishUpload({
-          pathname: "recordings/u1.webm",
-          sizeBytes: 1,
-          contentType: "audio/webm",
-        }),
-      );
-
-      expect(screen.getByRole("status")).toHaveTextContent(
-        "Creating the meeting…",
-      );
-      expect(
-        screen.getByRole("button", { name: "Creating the meeting…" }),
-      ).toHaveAttribute("aria-busy", "true");
-      expect(screen.queryByTestId("location")).not.toBeInTheDocument();
-
-      await act(async () =>
-        finishCreate(meetingFixture({ id: "m1", status: "uploaded" })),
-      );
-      expect(await screen.findByTestId("location")).toHaveTextContent("/m/m1");
-    });
-
-    it("hides the mic-free options while an unsaved recording waits", async () => {
-      const user = userEvent.setup();
-      renderWithRouter(<HomePage />);
-      await user.click(
-        await screen.findByRole("button", { name: "Start recording" }),
-      );
-      await user.click(
-        await screen.findByRole("button", { name: "Stop recording" }),
-      );
-
-      expect(
-        await screen.findByRole("button", { name: "Save and transcribe" }),
-      ).toBeVisible();
-      expect(screen.queryByText("No microphone?")).not.toBeInTheDocument();
-    });
-
-    it("asks before a link leaves an unsaved recording", async () => {
-      const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false);
-      const user = userEvent.setup();
-      renderWithRouter(<HomePage />);
-      await user.click(
-        await screen.findByRole("button", { name: "Start recording" }),
-      );
-      await screen.findByRole("button", { name: "Stop recording" });
-
-      await user.click(screen.getByRole("link", { name: /Weekly sync/ }));
-
-      expect(confirm).toHaveBeenCalledTimes(1);
-      expect(screen.queryByTestId("location")).not.toBeInTheDocument();
-      expect(
-        screen.getByRole("button", { name: "Stop recording" }),
-      ).toBeVisible();
-
-      confirm.mockReturnValueOnce(true);
-      await user.click(screen.getByRole("link", { name: /Weekly sync/ }));
-
-      expect(await screen.findByTestId("location")).toHaveTextContent("/m/");
-      expect(trackStop).toHaveBeenCalled();
-    });
-
-    it("asks before a link leaves a recording that is still saving", async () => {
-      let finishUpload: (
-        value: Awaited<ReturnType<typeof uploadAudio>>,
-      ) => void = () => {};
-      vi.mocked(uploadAudio).mockReturnValue(
-        new Promise((resolve) => {
-          finishUpload = resolve;
-        }),
-      );
-      const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
-
-      const user = await recordAndSave();
-      expect(await screen.findByRole("status")).toHaveTextContent(
-        "Uploading audio…",
-      );
-      await user.click(screen.getByRole("link", { name: /Weekly sync/ }));
-
-      expect(confirm).toHaveBeenCalledTimes(1);
-      expect(screen.queryByTestId("location")).not.toBeInTheDocument();
-      await act(async () =>
-        finishUpload({
-          pathname: "recordings/u1.webm",
-          sizeBytes: 1,
-          contentType: "audio/webm",
-        }),
-      );
-      expect(await screen.findByTestId("location")).toHaveTextContent("/m/m1");
-      expect(confirm).toHaveBeenCalledTimes(1);
-    });
-
-    it("drops a failed file upload's retry once a recording starts", async () => {
-      vi.mocked(uploadAudio).mockRejectedValueOnce(new Error("offline"));
-      const user = userEvent.setup();
-      renderWithRouter(<HomePage />);
-      const file = new File(["x"], "call.m4a", { type: "audio/mp4" });
-      await screen.findByText("No microphone?");
-      await user.upload(screen.getByLabelText("Audio file"), file);
-      expect(await screen.findByRole("alert")).toHaveTextContent(
-        /Couldn't upload/,
-      );
-
-      await user.click(screen.getByRole("button", { name: "Start recording" }));
-      await screen.findByRole("button", { name: "Stop recording" });
-
-      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-      expect(
-        screen.queryByRole("button", { name: "Retry" }),
-      ).not.toBeInTheDocument();
-    });
-
-    it("drops a sample still loading once a recording starts", async () => {
-      let finishFetch: (value: unknown) => void = () => {};
-      vi.stubGlobal(
-        "fetch",
-        vi.fn(
-          () =>
-            new Promise((resolve) => {
-              finishFetch = resolve;
-            }),
-        ),
-      );
-      const user = userEvent.setup();
-      renderWithRouter(<HomePage />);
-      await user.click(
-        await screen.findByRole("button", { name: "Try a 2-minute sample" }),
-      );
-
-      await user.click(screen.getByRole("button", { name: "Start recording" }));
-      await screen.findByRole("button", { name: "Stop recording" });
-      await act(async () =>
-        finishFetch({
-          ok: true,
-          blob: async () => new Blob(["x"], { type: "audio/webm" }),
-        }),
-      );
-
-      expect(uploadAudio).not.toHaveBeenCalled();
-      expect(screen.queryByTestId("location")).not.toBeInTheDocument();
-      expect(
-        screen.getByRole("button", { name: "Stop recording" }),
-      ).toBeVisible();
-    });
-
-    it("leaves without asking when nothing is recorded", async () => {
-      const confirm = vi.spyOn(window, "confirm");
-      const user = userEvent.setup();
-      renderWithRouter(<HomePage />);
-
-      await user.click(
-        await screen.findByRole("link", { name: /Weekly sync/ }),
-      );
-
-      expect(await screen.findByTestId("location")).toHaveTextContent("/m/");
-      expect(confirm).not.toHaveBeenCalled();
-    });
-
-    it("forgets a failed save when the recording is discarded", async () => {
-      vi.mocked(uploadAudio).mockRejectedValueOnce(new Error("offline"));
-
-      const user = await recordAndSave();
-      expect(await screen.findByRole("alert")).toHaveTextContent(
-        /Couldn't upload/,
-      );
-      await user.click(screen.getByRole("button", { name: "Discard" }));
-
-      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-      expect(
-        screen.getByRole("button", { name: "Start recording" }),
-      ).toBeEnabled();
-      expect(uploadAudio).toHaveBeenCalledTimes(1);
-    });
-
-    it("shows a failed save with a retry", async () => {
-      vi.mocked(createMeeting).mockRejectedValueOnce(
-        new ApiError({
-          status: 429,
-          code: "rate_limited",
-          message: "Too many recordings in the last hour.",
-          retryable: true,
-        }),
-      );
-
-      const user = await recordAndSave();
-
-      expect(await screen.findByRole("alert")).toHaveTextContent(
-        "Too many recordings in the last hour.",
-      );
-      await user.click(screen.getByRole("button", { name: "Retry" }));
-      expect(await screen.findByTestId("location")).toHaveTextContent("/m/m1");
-      expect(uploadAudio).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  it("explains when the browser can't record", async () => {
-    mockedList.mockResolvedValue([]);
-
-    renderWithRouter(<HomePage />);
-
-    expect(
-      await screen.findByText("Recording isn't available in this browser"),
-    ).toBeInTheDocument();
-    // Offered once, inside the recorder card.
-    expect(
-      screen.getAllByRole("button", { name: "Try a 2-minute sample" }),
-    ).toHaveLength(1);
   });
 });

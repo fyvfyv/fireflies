@@ -2,11 +2,14 @@ import { zValidator } from "@hono/zod-validator";
 import { handleUpload } from "@vercel/blob/client";
 import { Hono } from "hono";
 import { z } from "zod";
-import { validationHook } from "../http/errors.js";
-import { uploadPolicy } from "../upload/policy.js";
+import {
+  ALLOWED_AUDIO_TYPES,
+  MAX_AUDIO_BYTES,
+  RECORDING_PATHNAME,
+} from "../../shared/constants.js";
+import { HttpError, validationHook } from "../http/errors.js";
 
-// Only token requests are accepted: without onUploadCompleted there is no
-// completion callback to verify, so anything else is a malformed request.
+// Token requests only: without onUploadCompleted there is no completion callback to verify.
 const tokenRequestSchema = z.object({
   type: z.literal("blob.generate-client-token"),
   payload: z.object({
@@ -25,7 +28,22 @@ export function uploadRoutes() {
         await handleUpload({
           body: c.req.valid("json"),
           request: c.req.raw,
-          onBeforeGenerateToken: async (pathname) => uploadPolicy(pathname),
+          // The token is the only gate on direct uploads, so path, type and size are checked here.
+          onBeforeGenerateToken: async (pathname) => {
+            if (!RECORDING_PATHNAME.test(pathname)) {
+              throw new HttpError(
+                400,
+                "bad_pathname",
+                "Uploads must go to recordings/",
+                false,
+              );
+            }
+            return {
+              allowedContentTypes: [...ALLOWED_AUDIO_TYPES],
+              maximumSizeInBytes: MAX_AUDIO_BYTES,
+              addRandomSuffix: false,
+            };
+          },
         }),
       ),
   );

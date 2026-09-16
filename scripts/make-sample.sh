@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
 # Renders docs/sample-script.md into public/samples/standup.webm (macOS only).
-# Each "**Speaker:** line" is spoken by that speaker's `say` voice; ffmpeg joins
-# the turns and encodes Opus at the recorder's bitrate, so the sample takes the
-# same path through the pipeline as a real browser recording.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -39,8 +36,7 @@ while IFS= read -r line; do
   voice=$(voice_for "${BASH_REMATCH[1]}")
   turns=$((turns + 1))
   part="$tmp/$(printf '%03d' "$turns").aiff"
-  # Same PCM format for every voice so the concat demuxer can join them;
-  # the trailing silence separates speakers.
+  # Same PCM format for every voice so the concat demuxer can join them.
   say -v "$voice" --data-format=BEI16@22050 -o "$part" -- "${BASH_REMATCH[2]} [[slnc 400]]"
   echo "file '$part'" >>"$list"
 done <"$script"

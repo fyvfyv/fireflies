@@ -5,8 +5,7 @@ export default defineConfig({
   dialect: "postgresql",
   schema: "./server/db/schema.ts",
   out: "./drizzle",
-  // Migrations need a direct connection; the pooled URL is for runtime queries.
-  // `||`, not `??`: a copied .env.example leaves unused keys empty.
+  // Direct connection for migrations; `||` because a copied .env.example leaves keys empty.
   dbCredentials: {
     url: process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL || "",
   },

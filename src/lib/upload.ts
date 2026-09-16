@@ -7,8 +7,7 @@ export type UploadedAudio = {
   contentType: string;
 };
 
-// Uploads straight to the private Blob store: Vercel Functions cap request
-// bodies at 4.5 MB, so audio never passes through the API.
+// Direct to Blob: Vercel Functions cap request bodies at 4.5 MB.
 export async function uploadAudio(
   blob: Blob,
   contentType: string,

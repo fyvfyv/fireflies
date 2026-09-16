@@ -16,29 +16,20 @@ import { ClockDigits } from "@/components/ui/ClockDigits";
 import { MicFreeOptions } from "@/features/meetings/MicFreeOptions";
 import type { SubmitInput } from "@/features/meetings/useSubmitRecording";
 import { formatDateTime, formatTimestamp } from "@/lib/time";
-import type { CreateAnalyser } from "./audioAnalyser";
 import { LiveWaveform, type WaveformMode } from "./LiveWaveform";
 import type { Recorder, RecordingResult } from "./useRecorder";
 
 type RecorderCardProps = {
   recorder: Recorder;
   onSubmit: (input: SubmitInput) => void;
-  /** Called before the microphone is requested. */
   onStart?: () => void;
-  /** Called after the recording is thrown away. */
   onDiscard?: () => void;
-  /** Called when the card's upload option rejects a file. */
   onRejectFile?: (message: string) => void;
-  /** A save (from here or a mic-free option) is running. */
   busy?: boolean;
-  /** What the running save is doing, shown in the busy save button. */
   phaseLabel?: string;
-  /** Passed to the waveform; tests use it to inject a fake analyser. */
-  createAnalyser?: CreateAnalyser;
 };
 
 type RecorderState = Recorder["state"];
-// States with a working microphone path; the rest explain what went wrong.
 type UsableState = "idle" | "requesting" | "recording" | "stopped";
 type UnusableState = Exclude<RecorderState, UsableState>;
 
@@ -57,8 +48,7 @@ const waveformModes: Record<UsableState, WaveformMode> = {
   stopped: "frozen",
 };
 
-// A double click on Stop would otherwise land its second click on whatever
-// replaced it.
+// A double click's second click lands on the control replacing the button.
 const isRepeatClick = (event: MouseEvent) => event.detail > 1;
 
 export function RecorderCard({
@@ -69,7 +59,6 @@ export function RecorderCard({
   onRejectFile,
   busy = false,
   phaseLabel,
-  createAnalyser,
 }: RecorderCardProps) {
   const { state } = recorder;
   const focus = useFocusHandoff(state);
@@ -98,11 +87,10 @@ export function RecorderCard({
       {isUsable(state) ? (
         <>
           <StatusRow state={state} elapsed={recorder.elapsed} busy={busy} />
-          {/* Stays mounted from idle to stopped so the final bars survive. */}
+          {/* Must stay mounted from idle to stopped to keep the final bars. */}
           <LiveWaveform
             stream={recorder.stream}
             mode={waveformModes[state]}
-            createAnalyser={createAnalyser}
             className={tw("mt-4")}
           />
           <div className={tw("mt-5")}>
@@ -144,9 +132,7 @@ export function RecorderCard({
               />
             ) : (
               <>
-                {/* Busy, not disabled, while the permission prompt is open:
-                    keyboard focus stays on the button. A file or sample save
-                    disables it, since that save navigates away. */}
+                {/* Busy, not disabled: disabling would drop keyboard focus. */}
                 <Button
                   key="start"
                   ref={focus.setTarget}
@@ -191,11 +177,6 @@ export function RecorderCard({
   );
 }
 
-/**
- * Pressing Start, Try again, Stop or Discard removes the pressed button. When
- * it had focus, move focus to the control that replaces it instead of
- * dropping it on the page body.
- */
 function useFocusHandoff(state: RecorderState) {
   const targetRef = useRef<HTMLElement | null>(null);
   const pendingRef = useRef(false);
@@ -204,24 +185,20 @@ function useFocusHandoff(state: RecorderState) {
     targetRef.current = node;
   }, []);
 
-  const handoff = useCallback((event: MouseEvent<HTMLElement>) => {
+  const handoff = (event: MouseEvent<HTMLElement>) => {
     if (event.currentTarget === document.activeElement) {
       pendingRef.current = true;
     }
-  }, []);
+  };
 
   useEffect(() => {
     if (!pendingRef.current) return;
+    // Try again vanishes once the prompt opens; hand off again when answered.
+    if (state !== "requesting") pendingRef.current = false;
     const active = document.activeElement;
-    const lost = active === null || active === document.body;
-    if (state === "requesting") {
-      // Start stays in place as the busy button, but Try again goes away
-      // with its panel. Either way the handoff waits for the prompt's answer.
-      if (lost) targetRef.current?.focus();
-      return;
+    if (active === null || active === document.body) {
+      targetRef.current?.focus();
     }
-    pendingRef.current = false;
-    if (lost) targetRef.current?.focus();
   }, [state]);
 
   return { setTarget, handoff };
@@ -245,14 +222,11 @@ function StatusRow({
 }) {
   const recording = state === "recording";
   const hasTime = recording || state === "stopped";
-  // The page's status line announces the save phases. "Saving" is only
-  // drawn here, and the announced label keeps its node, so the live region
-  // doesn't read the save out a second time.
+  // The page announces save phases, so the live label must not change.
   const saving = state === "stopped" && busy;
   return (
     <div className={tw("flex items-center justify-between gap-4")}>
       <p
-        // Announces the switch to recording and back.
         aria-live="polite"
         className={tw(
           "flex items-center gap-2 type-small font-medium text-graphite",
@@ -312,7 +286,6 @@ function ReviewForm({
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
-    if (busy) return;
     onSubmit({
       ...result,
       title: title.trim() || undefined,
@@ -339,10 +312,7 @@ function ReviewForm({
         aria-describedby={hintId}
         className={tw(
           "mt-1.5 h-10 w-full rounded-control border border-rule bg-sheet px-3 text-ink transition-colors",
-          // A flush 2px ink edge instead of the global offset outline, which
-          // framed the bordered field twice while typing. outline-hidden (not
-          // none) keeps a transparent outline that forced-colors mode paints,
-          // since it drops the ring and recolours the border there.
+          // outline-hidden, unlike outline-none, shows in forced-colors mode.
           "hover:border-faint focus-visible:border-ink focus-visible:ring-1 focus-visible:ring-ink focus-visible:outline-hidden disabled:opacity-60",
         )}
       />
@@ -350,7 +320,6 @@ function ReviewForm({
         Leave empty to use a title from the notes.
       </p>
       <Button
-        key="save"
         ref={primaryRef}
         type="submit"
         size="lg"
@@ -422,7 +391,6 @@ function Unavailable({
   const canRetry = state === "unavailable";
   return (
     <div>
-      {/* Receives focus after a refused start, so the explanation is read. */}
       <div
         ref={canRetry ? undefined : focusRef}
         tabIndex={-1}

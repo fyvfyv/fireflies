@@ -27,20 +27,16 @@ import { useCopyAction } from "./useCopyAction";
 
 type NotesDocumentProps = {
   meeting: Meeting;
-  /** The legacy notes request finished; the page should refetch. */
   onUpdated: () => void;
   onRegeneratingChange?: (busy: boolean) => void;
-  className?: string;
 };
 
-// Documents that already played their entrance. Module-level, so switching
-// tabs or re-rendering on a poll never replays it.
+// Module-level, so switching tabs or re-rendering on a poll never replays the entrance.
 const revealed = new Set<string>();
 
 export function NotesDocument(props: NotesDocumentProps) {
   const { summary } = props.meeting;
   if (!summary) return null;
-  // Detailed notes replacing a legacy summary count as a new document.
   const revealKey = `${props.meeting.id}:${summary.notes.length > 0 ? "notes" : "summary"}`;
   return (
     <NotesSheet
@@ -52,7 +48,6 @@ export function NotesDocument(props: NotesDocumentProps) {
   );
 }
 
-// Joins a time to the word before it, so the time never starts a line alone.
 const NBSP = String.fromCharCode(0xa0);
 
 const wordSegmenter = new Intl.Segmenter("en", { granularity: "word" });
@@ -72,7 +67,6 @@ function NotesSheet({
   revealKey,
   onUpdated,
   onRegeneratingChange,
-  className,
 }: NotesDocumentProps & { summary: Summary; revealKey: string }) {
   const [reveal] = useState(() => !revealed.has(revealKey));
   useEffect(() => {
@@ -87,7 +81,6 @@ function NotesSheet({
     { success: "Notes copied", failure: "Couldn't copy the notes. Try again." },
   );
 
-  // Each block enters a step after the previous one.
   let step = 0;
   const enter = (): { className?: string; style?: CSSProperties } =>
     reveal
@@ -97,8 +90,7 @@ function NotesSheet({
         }
       : {};
 
-  // From the meeting rather than the player, so the sheet doesn't re-render
-  // on every time update.
+  // From the meeting rather than the player, so the sheet doesn't re-render on time updates.
   const spans = useMemo(
     () => tapeSpans(summary.notes, meeting.durationSeconds ?? 0),
     [summary.notes, meeting.durationSeconds],
@@ -108,8 +100,7 @@ function NotesSheet({
   const showPrompt = legacy && hasEnoughWords(meeting.transcriptText);
 
   return (
-    <div className={tw("flow-root", className)}>
-      {/* Floated beside the overview, except where that would squeeze it. */}
+    <div className={tw("flow-root")}>
       <div
         className={tw("mb-4 flex justify-end sm:float-right sm:mb-3 sm:ml-4")}
       >
@@ -170,11 +161,9 @@ function NotesSheet({
           <ActionItems meetingId={meeting.id} items={summary.actionItems} />
         </DocumentBlock>
       )}
-      {/* No "None captured": an empty list just isn't there. */}
       {summary.decisions.length > 0 && (
         <ListBlock title="Decisions" items={summary.decisions} {...enter()} />
       )}
-      {/* Detailed notes already state each takeaway as a timestamped point. */}
       {legacy && summary.keyTakeaways.length > 0 && (
         <ListBlock
           title="Key takeaways"
@@ -204,8 +193,7 @@ function TopicSection({
     <section
       aria-labelledby={headingId}
       style={style}
-      // From md the swatch and its gap (4px + 14px) hang in the gutter, so
-      // headings, gists and points share the overview's left edge.
+      // From md the swatch and its gap (4px + 14px) hang in the gutter, aligning text with the overview.
       className={tw("flex items-start gap-3.5 md:-ml-[1.125rem]", className)}
     >
       <SectionSwatch index={index} spans={spans} />
@@ -278,12 +266,7 @@ function TopicSection({
   );
 }
 
-/**
- * The playing topic's swatch runs the length of its section: a quiet "you
- * are here" that matches its span on the player's tape. A leaf component,
- * so only the swatches re-render on time updates. The stretched wrapper
- * gives the percentage height something definite to resolve against.
- */
+// A leaf, so only swatches re-render on time updates; the stretched wrapper gives `h-full` a definite height.
 function SectionSwatch({
   index,
   spans,
@@ -312,11 +295,6 @@ function SectionSwatch({
   );
 }
 
-/**
- * The section's time range, e.g. "0:08–0:41". Quiet graphite rather than a
- * marker: the first point usually carries the same start, and the range adds
- * how long the topic ran. Plays from the start.
- */
 function SectionTime({
   heading,
   start,
@@ -332,7 +310,6 @@ function SectionTime({
   return (
     <button
       type="button"
-      // Names the topic and keeps the visible times in the name.
       aria-label={`Play ${heading}, ${from}${to ? ` to ${to}` : ""}`}
       onClick={(event) => {
         seek(start, { play: true });

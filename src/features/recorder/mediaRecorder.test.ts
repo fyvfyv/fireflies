@@ -1,36 +1,25 @@
 import { describe, expect, it } from "vitest";
+import { FakeMediaRecorder } from "@/test/fakeMediaRecorder";
 import { type RecorderCtor, supportedMimeType } from "./mediaRecorder";
 
-function recorderSupporting(check: (type: string) => boolean): RecorderCtor {
-  return class extends EventTarget {
-    static isTypeSupported = check;
-    state = "inactive";
-    start() {}
-    stop() {}
+const recording = (...types: string[]): RecorderCtor =>
+  class extends FakeMediaRecorder {
+    static isTypeSupported = (type: string) => types.includes(type);
   };
-}
 
 describe("supportedMimeType", () => {
-  it("is undefined without a MediaRecorder", () => {
-    expect(supportedMimeType(undefined)).toBeUndefined();
-  });
-
-  it("prefers Opus in WebM", () => {
-    expect(supportedMimeType(recorderSupporting(() => true))).toBe(
-      "audio/webm;codecs=opus",
+  it("prefers Opus in WebM, then plain WebM, then MP4 (Safari)", () => {
+    expect(
+      supportedMimeType(recording("audio/mp4", "audio/webm;codecs=opus")),
+    ).toBe("audio/webm;codecs=opus");
+    expect(supportedMimeType(recording("audio/mp4", "audio/webm"))).toBe(
+      "audio/webm",
     );
+    expect(supportedMimeType(recording("audio/mp4"))).toBe("audio/mp4");
   });
 
-  it("falls back to plain WebM, then MP4 (Safari)", () => {
-    expect(
-      supportedMimeType(recorderSupporting((type) => type === "audio/webm")),
-    ).toBe("audio/webm");
-    expect(
-      supportedMimeType(recorderSupporting((type) => type === "audio/mp4")),
-    ).toBe("audio/mp4");
-  });
-
-  it("is undefined when nothing is supported", () => {
-    expect(supportedMimeType(recorderSupporting(() => false))).toBeUndefined();
+  it("is undefined when nothing can be recorded", () => {
+    expect(supportedMimeType(undefined)).toBeUndefined();
+    expect(supportedMimeType(recording())).toBeUndefined();
   });
 });

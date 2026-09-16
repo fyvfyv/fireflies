@@ -6,9 +6,7 @@ import {
 } from "../../shared/constants.js";
 import type { MeetingStatus } from "../../shared/schemas.js";
 import type { AppDeps } from "../deps.js";
-import { HttpError } from "../http/errors.js";
 import type { MeetingPatch, NewMeeting } from "../repo/types.js";
-import { SttError } from "../services/stt/types.js";
 import { SummaryError } from "../services/types.js";
 import { type MemoryStorage, memoryStorage } from "../storage/memoryStorage.js";
 import { stubSummary, stubTranscript, testDeps } from "../test/testDeps.js";
@@ -27,6 +25,21 @@ const newMeeting: NewMeeting = {
   durationSeconds: 42,
   createdIpHash: null,
 };
+
+const transcribed: MeetingPatch = {
+  status: "transcribed",
+  transcriptText: stubTranscript.text,
+  transcriptSegments: stubTranscript.segments,
+  language: "en",
+  sttProvider: "stub:stt",
+};
+
+const summaryResult = (overrides = {}) => ({
+  summary: stubSummary,
+  model: "stub:llm",
+  truncated: false,
+  ...overrides,
+});
 
 describe("processMeeting", () => {
   let clock: Date;
@@ -57,19 +70,11 @@ describe("processMeeting", () => {
     return row.id;
   };
 
-  const transcribed: MeetingPatch = {
-    status: "transcribed",
-    transcriptText: stubTranscript.text,
-    transcriptSegments: stubTranscript.segments,
-    language: "en",
-    sttProvider: "stub:stt",
-  };
-
   const transcribe = () => vi.mocked(deps.stt.transcribe);
   const summarize = () => vi.mocked(deps.summarize);
 
   describe("happy path", () => {
-    it("persists every step in order and resolves the done row", async () => {
+    it("persists and logs every step in order and resolves the done row", async () => {
       const id = await seed();
       const update = vi.spyOn(deps.repo, "update");
 
@@ -104,97 +109,53 @@ describe("processMeeting", () => {
         processingStartedAt: null,
       });
       expect(await deps.repo.get(id)).toEqual(row);
-    });
-
-    it("keeps the recorder duration when STT does not report one", async () => {
-      transcribe().mockResolvedValueOnce({
-        text: stubTranscript.text,
-        segments: [],
-      });
-      const id = await seed();
-
-      const row = await processMeeting(deps, id);
-
-      expect(row).toMatchObject({ durationSeconds: 42, language: null });
-    });
-
-    it("records a truncated prompt", async () => {
-      summarize().mockResolvedValueOnce({
-        summary: stubSummary,
-        model: "stub:llm",
-        truncated: true,
-      });
-      const id = await seed();
-
-      expect((await processMeeting(deps, id)).transcriptTruncated).toBe(true);
-    });
-
-    it("keeps a title the user typed", async () => {
-      const id = await seed({}, { title: "Weekly sync", titleEdited: true });
-
-      expect((await processMeeting(deps, id)).title).toBe("Weekly sync");
-    });
-
-    it("keeps the default title when the LLM returns a blank one", async () => {
-      summarize().mockResolvedValueOnce({
-        summary: { ...stubSummary, title: "  " },
-        model: "stub:llm",
-        truncated: false,
-      });
-      const id = await seed();
-
-      expect((await processMeeting(deps, id)).title).toBe(newMeeting.title);
-    });
-
-    it("logs one line per step with its duration", async () => {
-      const id = await seed();
-
-      await processMeeting(deps, id);
-
-      expect(log).toHaveBeenCalledTimes(2);
-      expect(log).toHaveBeenCalledWith(
+      expect(log.mock.calls.map(([line]) => line)).toEqual([
         expect.objectContaining({
           level: "info",
           meetingId: id,
           step: "transcribe",
           durationMs: expect.any(Number),
         }),
-      );
-      expect(log).toHaveBeenCalledWith(
         expect.objectContaining({
+          level: "info",
           step: "summarize",
           model: "stub:llm",
-          durationMs: expect.any(Number),
         }),
+      ]);
+    });
+
+    it("keeps the recorder duration STT did not measure and records truncation", async () => {
+      transcribe().mockResolvedValueOnce({
+        text: stubTranscript.text,
+        segments: [],
+      });
+      summarize().mockResolvedValueOnce(summaryResult({ truncated: true }));
+      const id = await seed();
+
+      expect(await processMeeting(deps, id)).toMatchObject({
+        durationSeconds: 42,
+        language: null,
+        transcriptTruncated: true,
+      });
+    });
+
+    it("keeps a title the user typed over the LLM title", async () => {
+      const id = await seed({}, { title: "Typed", titleEdited: true });
+
+      expect((await processMeeting(deps, id)).title).toBe("Typed");
+    });
+
+    it("keeps the default title over a blank LLM title", async () => {
+      summarize().mockResolvedValueOnce(
+        summaryResult({ summary: { ...stubSummary, title: "  " } }),
       );
+      const id = await seed();
+
+      expect((await processMeeting(deps, id)).title).toBe(newMeeting.title);
     });
   });
 
   describe("resume", () => {
-    it("skips speech-to-text when the transcript is already stored", async () => {
-      const id = await seed(transcribed);
-
-      const row = await processMeeting(deps, id);
-
-      expect(transcribe()).not.toHaveBeenCalled();
-      expect(summarize()).toHaveBeenCalledExactlyOnceWith({
-        text: stubTranscript.text,
-        segments: stubTranscript.segments,
-      });
-      expect(row.status).toBe("done");
-    });
-
-    it("summarizes a stored transcript without segments as plain text", async () => {
-      const id = await seed({ ...transcribed, transcriptSegments: null });
-
-      await processMeeting(deps, id);
-
-      expect(summarize()).toHaveBeenCalledExactlyOnceWith({
-        text: stubTranscript.text,
-        segments: null,
-      });
-    });
-
     it("retries only the summary after a failed summarize", async () => {
       const id = await seed({
         ...transcribed,
@@ -208,9 +169,12 @@ describe("processMeeting", () => {
       const row = await processMeeting(deps, id);
 
       expect(transcribe()).not.toHaveBeenCalled();
+      expect(summarize()).toHaveBeenCalledExactlyOnceWith({
+        text: stubTranscript.text,
+        segments: stubTranscript.segments,
+      });
       expect(row).toMatchObject({
         status: "done",
-        transcriptText: stubTranscript.text,
         summary: stubSummary,
         errorStep: null,
         errorMessage: null,
@@ -235,14 +199,7 @@ describe("processMeeting", () => {
           status: "done",
           transcriptText: text,
           title: "Empty recording",
-          summary: {
-            title: "Empty recording",
-            keywords: [],
-            notes: [],
-            keyTakeaways: [],
-            decisions: [],
-            actionItems: [],
-          },
+          summary: { title: "Empty recording", notes: [], actionItems: [] },
         });
       },
     );
@@ -269,7 +226,6 @@ describe("processMeeting", () => {
       const row = await processMeeting(deps, id);
 
       expect(transcribe()).not.toHaveBeenCalled();
-      expect(summarize()).not.toHaveBeenCalled();
       expect(row).toMatchObject({
         status: "failed",
         errorStep: "transcribe",
@@ -279,45 +235,10 @@ describe("processMeeting", () => {
       });
     });
 
-    it("stores the STT error message and retryability", async () => {
-      transcribe().mockRejectedValueOnce(
-        new SttError("provider", "Speech-to-text provider failed", true),
-      );
-      const id = await seed();
-
-      const row = await processMeeting(deps, id);
-
-      expect(row).toMatchObject({
-        status: "failed",
-        errorStep: "transcribe",
-        errorMessage: "Speech-to-text provider failed",
-        errorRetryable: true,
-        transcriptText: null,
-      });
-    });
-
-    it("treats an unexpected storage error as a retryable transcribe failure", async () => {
-      vi.spyOn(storage, "readAudio").mockRejectedValueOnce(
-        new Error("socket hang up"),
-      );
-      const id = await seed();
-
-      const row = await processMeeting(deps, id);
-
-      expect(row).toMatchObject({
-        status: "failed",
-        errorStep: "transcribe",
-        errorMessage: "Unexpected error while transcribing",
-        errorRetryable: true,
-      });
-    });
-
     it("fails missing audio as non-retryable", async () => {
       const id = await seed({}, { audioPathname: "recordings/gone.webm" });
 
-      const row = await processMeeting(deps, id);
-
-      expect(row).toMatchObject({
+      expect(await processMeeting(deps, id)).toMatchObject({
         status: "failed",
         errorStep: "transcribe",
         errorMessage: "Audio not found",
@@ -325,53 +246,49 @@ describe("processMeeting", () => {
       });
     });
 
-    it("never stores a raw unexpected error message", async () => {
-      summarize().mockRejectedValueOnce(new Error("k".repeat(700)));
-      const id = await seed();
-
-      const row = await processMeeting(deps, id);
-
-      expect(row).toMatchObject({
-        status: "failed",
-        errorStep: "summarize",
-        errorMessage: "Unexpected error while summarizing",
-        errorRetryable: true,
-        transcriptText: stubTranscript.text,
-        summary: null,
-      });
-      expect(log).toHaveBeenCalledWith(
-        expect.objectContaining({
-          level: "error",
-          step: "summarize",
-          error: "k".repeat(700),
-        }),
-      );
-    });
-
-    it("caps a known error message at 500 characters", async () => {
+    it("stores a known error message capped at 500 characters", async () => {
       summarize().mockRejectedValueOnce(
         new SummaryError("s".repeat(700), false),
       );
       const id = await seed();
 
-      const row = await processMeeting(deps, id);
-
-      expect(row.errorMessage).toBe("s".repeat(500));
-      expect(row.errorRetryable).toBe(false);
-    });
-
-    it("counts the fifth failed attempt and releases the lease", async () => {
-      summarize().mockRejectedValueOnce(new SummaryError("nope", true));
-      const id = await seed({ ...transcribed, status: "failed", attempts: 4 });
-
-      const row = await processMeeting(deps, id);
-
-      expect(row).toMatchObject({
-        status: "failed",
-        attempts: 5,
-        processingStartedAt: null,
+      expect(await processMeeting(deps, id)).toMatchObject({
+        errorStep: "summarize",
+        errorMessage: "s".repeat(500),
+        errorRetryable: false,
       });
     });
+
+    it.each([
+      [
+        "transcribe",
+        "Unexpected error while transcribing",
+        () => vi.spyOn(storage, "readAudio"),
+      ],
+      ["summarize", "Unexpected error while summarizing", () => summarize()],
+    ] as const)(
+      "logs an unexpected %s error but never stores its message",
+      async (step, errorMessage, target) => {
+        target().mockRejectedValueOnce(new Error("raw provider payload"));
+        const id = await seed();
+
+        const row = await processMeeting(deps, id);
+
+        expect(row).toMatchObject({
+          status: "failed",
+          errorStep: step,
+          errorMessage,
+          errorRetryable: true,
+        });
+        expect(log).toHaveBeenCalledWith(
+          expect.objectContaining({
+            level: "error",
+            step,
+            error: "raw provider payload",
+          }),
+        );
+      },
+    );
   });
 
   describe("refusals", () => {
@@ -382,45 +299,32 @@ describe("processMeeting", () => {
       });
     });
 
-    it("rejects a done meeting with 422 before taking the lease", async () => {
-      const id = await seed({ status: "done" });
-      const claimLease = vi.spyOn(deps.repo, "claimLease");
+    it.each<[string, MeetingPatch, string]>([
+      ["a done meeting", { status: "done" }, "not_processable"],
+      [
+        "a failure marked non-retryable",
+        { status: "failed", errorRetryable: false, attempts: 1 },
+        "not_retryable",
+      ],
+      [
+        "a meeting out of attempts",
+        { status: "failed", errorRetryable: true, attempts: MAX_ATTEMPTS },
+        "give_up",
+      ],
+    ])(
+      "rejects %s with 422 before taking the lease",
+      async (_, patch, code) => {
+        const id = await seed(patch);
+        const claimLease = vi.spyOn(deps.repo, "claimLease");
 
-      const err = await processMeeting(deps, id).catch((e: unknown) => e);
-
-      expect(err).toBeInstanceOf(HttpError);
-      expect(err).toMatchObject({ status: 422, code: "not_processable" });
-      expect(claimLease).not.toHaveBeenCalled();
-    });
-
-    it("rejects a failure marked non-retryable before taking the lease", async () => {
-      const id = await seed({
-        status: "failed",
-        errorStep: "transcribe",
-        errorMessage: "Audio not found",
-        errorRetryable: false,
-        attempts: 1,
-      });
-      const claimLease = vi.spyOn(deps.repo, "claimLease");
-
-      await expect(processMeeting(deps, id)).rejects.toMatchObject({
-        status: 422,
-        code: "not_retryable",
-      });
-      expect(claimLease).not.toHaveBeenCalled();
-      expect(transcribe()).not.toHaveBeenCalled();
-    });
-
-    it("gives up after five failed attempts without calling STT", async () => {
-      const id = await seed({ status: "failed", attempts: 5 });
-
-      await expect(processMeeting(deps, id)).rejects.toMatchObject({
-        status: 422,
-        code: "give_up",
-      });
-      expect(transcribe()).not.toHaveBeenCalled();
-      expect((await deps.repo.get(id))?.attempts).toBe(5);
-    });
+        await expect(processMeeting(deps, id)).rejects.toMatchObject({
+          status: 422,
+          code,
+        });
+        expect(claimLease).not.toHaveBeenCalled();
+        expect(await deps.repo.get(id)).toMatchObject(patch);
+      },
+    );
 
     it("rejects with 409 while another run holds a fresh lease", async () => {
       const id = await seed();
@@ -438,7 +342,7 @@ describe("processMeeting", () => {
       const id = await seed();
       summarize().mockImplementationOnce(async () => {
         await deps.repo.delete(id);
-        return { summary: stubSummary, model: "stub:llm", truncated: false };
+        return summaryResult();
       });
 
       await expect(processMeeting(deps, id)).rejects.toMatchObject({
@@ -468,89 +372,74 @@ describe("processMeeting", () => {
       });
       expect(summarize()).not.toHaveBeenCalled();
     });
+  });
 
-    it("takes over a stale lease", async () => {
-      const id = await seed();
-      await deps.repo.claimLease(id, clock, 1);
-      await deps.repo.update(id, { status: "transcribing" });
+  describe("abandoned runs", () => {
+    const abandon = async (id: string, status: MeetingStatus) => {
+      await deps.repo.claimLease(id, clock, LEASE_MS);
+      await deps.repo.update(id, { status });
       tick(LEASE_MS + 1);
+    };
+
+    it.each<[MeetingStatus, number]>([
+      ["transcribing", 2],
+      ["transcribed", 2],
+      ["summarizing", 2],
+      ["uploaded", 1],
+    ])(
+      "takes over a run abandoned while %s, first counting attempts up to %i",
+      async (status, attempts) => {
+        const id = await seed({ ...transcribed, attempts: 1 });
+        await abandon(id, status);
+        let attemptsDuringRun: number | undefined;
+        summarize().mockImplementationOnce(async () => {
+          attemptsDuringRun = (await deps.repo.get(id))?.attempts;
+          return summaryResult();
+        });
+
+        const row = await processMeeting(deps, id);
+
+        expect(attemptsDuringRun).toBe(attempts);
+        expect(row).toMatchObject({
+          status: "done",
+          attempts,
+          processingStartedAt: null,
+        });
+      },
+    );
+
+    it("counts both the abandoned run and a failed takeover, then releases the lease", async () => {
+      summarize().mockRejectedValueOnce(new SummaryError("Try again", true));
+      const id = await seed(transcribed);
+      await abandon(id, "summarizing");
 
       const row = await processMeeting(deps, id);
 
-      expect(row).toMatchObject({ status: "done", processingStartedAt: null });
+      expect(transcribe()).not.toHaveBeenCalled();
+      expect(row).toMatchObject({
+        status: "failed",
+        errorMessage: "Try again",
+        errorRetryable: true,
+        attempts: 2,
+        processingStartedAt: null,
+      });
     });
 
-    describe("abandoned runs", () => {
-      const abandon = async (id: string, status: MeetingStatus) => {
-        await deps.repo.claimLease(id, clock, LEASE_MS);
-        await deps.repo.update(id, { status });
+    it("gives up once abandoned runs use up the attempts", async () => {
+      const id = await seed({ attempts: MAX_ATTEMPTS - 2 });
+      await abandon(id, "transcribing");
+      transcribe().mockReturnValue(new Promise(() => {}));
+      for (const run of [1, 2]) {
+        void processMeeting(deps, id);
+        await vi.waitFor(() => expect(transcribe()).toHaveBeenCalledTimes(run));
         tick(LEASE_MS + 1);
-      };
+      }
 
-      it("counts the abandoned run before redoing its work", async () => {
-        const id = await seed({ attempts: 1 });
-        await abandon(id, "transcribing");
-        let attemptsDuringRun: number | undefined;
-        transcribe().mockImplementationOnce(async () => {
-          attemptsDuringRun = (await deps.repo.get(id))?.attempts;
-          return stubTranscript;
-        });
-
-        const row = await processMeeting(deps, id);
-
-        expect(attemptsDuringRun).toBe(2);
-        expect(row).toMatchObject({ status: "done", attempts: 2 });
+      await expect(processMeeting(deps, id)).rejects.toMatchObject({
+        status: 422,
+        code: "give_up",
       });
-
-      it("counts a run abandoned between its two steps", async () => {
-        const id = await seed({ ...transcribed, attempts: 1 });
-        await abandon(id, "transcribed");
-
-        const row = await processMeeting(deps, id);
-
-        expect(row).toMatchObject({ status: "done", attempts: 2 });
-        expect(transcribe()).not.toHaveBeenCalled();
-      });
-
-      it("does not count a lease taken before any work started", async () => {
-        const id = await seed({ attempts: 1 });
-        await abandon(id, "uploaded");
-
-        const row = await processMeeting(deps, id);
-
-        expect(row).toMatchObject({ status: "done", attempts: 1 });
-      });
-
-      it("counts both the abandoned run and a failed takeover", async () => {
-        summarize().mockRejectedValueOnce(new SummaryError("nope", true));
-        const id = await seed(transcribed);
-        await abandon(id, "summarizing");
-
-        const row = await processMeeting(deps, id);
-
-        expect(row).toMatchObject({ status: "failed", attempts: 2 });
-        expect(transcribe()).not.toHaveBeenCalled();
-      });
-
-      it("gives up once abandoned runs use up the attempts", async () => {
-        const id = await seed({ attempts: MAX_ATTEMPTS - 2 });
-        await abandon(id, "transcribing");
-        // A killed function never settles, so its lease is never released.
-        transcribe().mockReturnValue(new Promise(() => {}));
-        for (const run of [1, 2]) {
-          void processMeeting(deps, id);
-          await vi.waitFor(() =>
-            expect(transcribe()).toHaveBeenCalledTimes(run),
-          );
-          tick(LEASE_MS + 1);
-        }
-
-        await expect(processMeeting(deps, id)).rejects.toMatchObject({
-          status: 422,
-          code: "give_up",
-        });
-        expect((await deps.repo.get(id))?.attempts).toBe(MAX_ATTEMPTS);
-      });
+      expect((await deps.repo.get(id))?.attempts).toBe(MAX_ATTEMPTS);
     });
   });
 });

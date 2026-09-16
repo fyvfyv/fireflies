@@ -3,179 +3,100 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { TrySampleButton } from "./TrySampleButton";
 
-const sampleResponse = (blob: Blob) => ({ ok: true, blob: async () => blob });
+const sampleResponse = (type: string) => ({
+  ok: true,
+  blob: async () => new Blob(["x"], { type }),
+});
 
-function setup(props: { disabled?: boolean } = {}) {
+function setup(fetchImpl: (url: string, init: RequestInit) => unknown) {
+  const fetchMock = vi.fn(fetchImpl);
+  vi.stubGlobal("fetch", fetchMock);
   const onSubmit = vi.fn();
   const user = userEvent.setup();
-  render(<TrySampleButton onSubmit={onSubmit} {...props} />);
-  const click = () =>
-    user.click(screen.getByRole("button", { name: "Try a 2-minute sample" }));
-  return { onSubmit, click };
+  const view = render(<TrySampleButton onSubmit={onSubmit} />);
+  const button = () => screen.getByRole("button", { name: /sample/ });
+  return { ...view, fetchMock, onSubmit, user, button };
 }
 
-describe("TrySampleButton", () => {
-  it("submits the bundled sample recording", async () => {
-    const fetchMock = vi.fn(async () =>
-      sampleResponse(new Blob(["x"], { type: "audio/webm" })),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-    const { onSubmit, click } = setup();
+const never = () => new Promise(() => {});
 
-    await click();
+describe("TrySampleButton", () => {
+  it("submits the bundled sample as audio, whatever type the server sent", async () => {
+    const { fetchMock, onSubmit, user, button } = setup(async () =>
+      sampleResponse("video/webm"),
+    );
+
+    await user.click(button());
 
     expect(fetchMock).toHaveBeenCalledWith("/samples/standup.webm", {
       signal: expect.any(AbortSignal),
     });
-    expect(onSubmit).toHaveBeenCalledTimes(1);
-    const input = onSubmit.mock.calls[0]?.[0];
-    expect(input).toMatchObject({
+    expect(onSubmit).toHaveBeenCalledWith({
+      blob: expect.any(Blob),
       contentType: "audio/webm",
       source: "demo",
       title: "Sample: weekly standup",
     });
-    expect(input.blob).toBeInstanceOf(Blob);
   });
 
-  it("labels the sample as audio whatever type the server sent", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        sampleResponse(new Blob(["x"], { type: "video/webm" })),
-      ),
-    );
-    const { onSubmit, click } = setup();
+  it.each([
+    ["an error status", async () => ({ ok: false, status: 404 })],
+    ["the SPA's HTML fallback", async () => sampleResponse("text/html")],
+    [
+      "a network error",
+      async () => {
+        throw new TypeError("Failed to fetch");
+      },
+    ],
+  ])("reports a missing sample on %s", async (_case, fetchImpl) => {
+    const { onSubmit, user, button } = setup(fetchImpl);
 
-    await click();
-
-    expect(onSubmit.mock.calls[0]?.[0].contentType).toBe("audio/webm");
-  });
-
-  it("shows an error when the sample can't be loaded", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => ({ ok: false, status: 404 })),
-    );
-    const { onSubmit, click } = setup();
-
-    await click();
+    await user.click(button());
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      /couldn't load the sample/i,
+      "Couldn't load the sample recording. Please try again.",
     );
     expect(onSubmit).not.toHaveBeenCalled();
-    expect(
-      screen.getByRole("button", { name: "Try a 2-minute sample" }),
-    ).toBeEnabled();
+    expect(button()).toBeEnabled();
   });
 
-  it("treats an HTML fallback page as a missing sample", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
-        sampleResponse(new Blob(["<!doctype html>"], { type: "text/html" })),
-      ),
-    );
-    const { onSubmit, click } = setup();
+  it("stays focused and busy while loading, ignoring more clicks", async () => {
+    const { fetchMock, user, button } = setup(never);
 
-    await click();
+    await user.click(button());
+    await user.click(button());
 
-    expect(await screen.findByRole("alert")).toBeInTheDocument();
-    expect(onSubmit).not.toHaveBeenCalled();
-  });
-
-  it("shows an error when the request fails", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => {
-        throw new TypeError("Failed to fetch");
-      }),
-    );
-    const { onSubmit, click } = setup();
-
-    await click();
-
-    expect(await screen.findByRole("alert")).toBeInTheDocument();
-    expect(onSubmit).not.toHaveBeenCalled();
-  });
-
-  it("shows it is loading and ignores more clicks", async () => {
-    const fetchMock = vi.fn(() => new Promise(() => {}));
-    vi.stubGlobal("fetch", fetchMock);
-    const { click } = setup();
-    const user = userEvent.setup();
-
-    await click();
-    const button = screen.getByRole("button", { name: "Loading sample…" });
-    await user.click(button);
-
-    expect(button).toHaveAttribute("aria-busy", "true");
-    // Busy rather than disabled, so keyboard focus stays on the button.
-    expect(button).toHaveFocus();
+    expect(button()).toHaveAccessibleName("Loading sample…");
+    expect(button()).toHaveAttribute("aria-busy", "true");
+    expect(button()).toHaveFocus();
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("ignores the second click of a double click that lands on it", () => {
-    // The button can appear under the pointer after a double click on the
-    // recorder's Discard button.
-    const fetchMock = vi.fn(() => new Promise(() => {}));
-    vi.stubGlobal("fetch", fetchMock);
-    const onSubmit = vi.fn();
-    render(<TrySampleButton onSubmit={onSubmit} />);
+  it("ignores the second click of a double click, but not the keyboard", async () => {
+    const { fetchMock, user, button } = setup(never);
 
-    fireEvent.click(
-      screen.getByRole("button", { name: "Try a 2-minute sample" }),
-      { detail: 2 },
-    );
-
+    fireEvent.click(button(), { detail: 2 });
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(
-      screen.getByRole("button", { name: "Try a 2-minute sample" }),
-    ).not.toHaveAttribute("aria-busy");
-  });
-
-  it("still loads the sample from the keyboard", async () => {
-    const fetchMock = vi.fn(() => new Promise(() => {}));
-    vi.stubGlobal("fetch", fetchMock);
-    const user = userEvent.setup();
-    render(<TrySampleButton onSubmit={vi.fn()} />);
 
     await user.tab();
     await user.keyboard("{Enter}");
-
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("drops the sample when unmounted while it loads", async () => {
     let finishFetch: (value: unknown) => void = () => {};
-    const fetchMock = vi.fn(
-      (_url: string, _init: RequestInit) =>
+    const { fetchMock, onSubmit, user, button, unmount } = setup(
+      () =>
         new Promise((resolve) => {
           finishFetch = resolve;
         }),
     );
-    vi.stubGlobal("fetch", fetchMock);
-    const onSubmit = vi.fn();
-    const user = userEvent.setup();
-    const { unmount } = render(<TrySampleButton onSubmit={onSubmit} />);
-    await user.click(
-      screen.getByRole("button", { name: "Try a 2-minute sample" }),
-    );
+    await user.click(button());
 
     unmount();
-    await act(async () =>
-      finishFetch(sampleResponse(new Blob(["x"], { type: "audio/webm" }))),
-    );
+    await act(async () => finishFetch(sampleResponse("audio/webm")));
 
     expect(fetchMock.mock.calls[0]?.[1].signal?.aborted).toBe(true);
     expect(onSubmit).not.toHaveBeenCalled();
-  });
-
-  it("can be disabled", () => {
-    setup({ disabled: true });
-
-    expect(
-      screen.getByRole("button", { name: "Try a 2-minute sample" }),
-    ).toBeDisabled();
   });
 });

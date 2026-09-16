@@ -10,13 +10,11 @@ export type Transcript = {
 };
 
 export type SttProvider = {
-  /** Recorded on the meeting, e.g. `gateway:openai/whisper-1`. */
   name: string;
   transcribe(input: SttInput): Promise<Transcript>;
 };
 
-// The message is persisted and shown to users, so it must never carry raw
-// provider output.
+// The message is persisted and shown to users, so it must never carry raw provider output.
 export class SttError extends Error {
   readonly code: "too_large" | "provider";
   readonly retryable: boolean;

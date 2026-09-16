@@ -12,7 +12,7 @@ describe("create rate limit", () => {
     app = createApp(testDeps({ now: () => clock }));
   });
 
-  const createFrom = (ip?: string) =>
+  const createFrom = (ip: string) =>
     postJson(
       app,
       "/api/meetings",
@@ -30,16 +30,17 @@ describe("create rate limit", () => {
     return ids;
   };
 
-  it("rejects the 11th create from one IP within an hour", async () => {
+  it("rejects the 11th create from one client within an hour", async () => {
     await createTimes(10, () => "1.1.1.1");
 
     const res = await createFrom("1.1.1.1");
 
     expect(res.status).toBe(429);
-    expect(Number(res.headers.get("retry-after"))).toBeGreaterThan(0);
+    expect(res.headers.get("retry-after")).toBe("3600");
     expect(await res.json()).toMatchObject({
       error: { code: "rate_limited", retryable: true },
     });
+    expect((await createFrom("2.2.2.2")).status).toBe(201);
   });
 
   it("buckets by the first x-forwarded-for hop", async () => {
@@ -48,10 +49,10 @@ describe("create rate limit", () => {
     expect((await createFrom("1.1.1.1, 10.0.0.99")).status).toBe(429);
   });
 
-  it("lets a different IP through", async () => {
-    await createTimes(10, () => "1.1.1.1");
+  it("puts requests without x-forwarded-for in one bucket", async () => {
+    await createTimes(10, () => "");
 
-    expect((await createFrom("2.2.2.2")).status).toBe(201);
+    expect((await createFrom("")).status).toBe(429);
   });
 
   it("rejects the 31st create overall", async () => {
@@ -65,13 +66,6 @@ describe("create rate limit", () => {
     });
   });
 
-  it("treats requests without x-forwarded-for as one local bucket", async () => {
-    await createTimes(10, () => "");
-
-    expect((await createFrom()).status).toBe(429);
-    expect((await createFrom("2.2.2.2")).status).toBe(201);
-  });
-
   it("forgets creates older than an hour", async () => {
     await createTimes(10, () => "1.1.1.1");
     clock = new Date(clock.getTime() + 60 * 60_000 + 1);
@@ -79,25 +73,17 @@ describe("create rate limit", () => {
     expect((await createFrom("1.1.1.1")).status).toBe(201);
   });
 
-  it("keeps counting meetings that were deleted", async () => {
-    const ids = await createTimes(10, () => "1.1.1.1");
-    for (const id of ids) {
+  it("limits only creates and keeps counting deleted meetings", async () => {
+    const headers = { "x-forwarded-for": "1.1.1.1" };
+    for (const id of await createTimes(10, () => "1.1.1.1")) {
       const res = await app.request(`/api/meetings/${id}`, {
         method: "DELETE",
+        headers,
       });
       expect(res.status).toBe(204);
     }
 
+    expect((await app.request("/api/meetings", { headers })).status).toBe(200);
     expect((await createFrom("1.1.1.1")).status).toBe(429);
-  });
-
-  it("does not limit reads", async () => {
-    await createTimes(10, () => "1.1.1.1");
-
-    const res = await app.request("/api/meetings", {
-      headers: { "x-forwarded-for": "1.1.1.1" },
-    });
-
-    expect(res.status).toBe(200);
   });
 });

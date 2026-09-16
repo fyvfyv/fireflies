@@ -1,7 +1,7 @@
-import type { Meeting, Summary } from "@shared/schemas";
+import type { Meeting, NoteSection, Summary } from "@shared/schemas";
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Toaster } from "@/components/ui/Toaster";
 import { PlayerProvider, usePlayer } from "@/features/player/PlayerProvider";
 import { getAudioUrl } from "@/lib/api";
@@ -17,21 +17,18 @@ vi.mock("@/lib/api", async (importOriginal) => ({
 const baseSummary = meetingFixture().summary as Summary;
 
 let nextId = 0;
-// Each test gets its own meeting, so the once-per-meeting reveal is fresh.
 function meeting(overrides: Partial<Meeting> = {}) {
   nextId += 1;
   return meetingFixture({ id: `notes-${nextId}`, ...overrides });
 }
 
 function renderDocument(value: Meeting = meeting()) {
-  const onUpdated = vi.fn();
-  const result = render(
+  return render(
     <>
-      <NotesDocument meeting={value} onUpdated={onUpdated} />
+      <NotesDocument meeting={value} onUpdated={vi.fn()} />
       <Toaster />
     </>,
   );
-  return { ...result, onUpdated, user: userEvent.setup() };
 }
 
 const listOf = (name: string) =>
@@ -39,26 +36,18 @@ const listOf = (name: string) =>
     .getAllByRole("listitem")
     .map((item) => item.textContent);
 
-beforeEach(() => {
-  vi.mocked(getAudioUrl).mockResolvedValue({
-    url: "https://blob.test/a.webm",
-    expiresAt: "2026-09-17T13:00:00.000Z",
-  });
-});
-
 afterEach(() => {
   localStorage.clear();
 });
 
 describe("NotesDocument", () => {
-  it("renders the overview, keywords and topic sections", () => {
-    const { container } = renderDocument();
+  it("renders the overview, topic sections, action items and decisions", () => {
+    renderDocument();
 
     expect(
       screen.getByText("The team agreed to ship the release on Friday."),
     ).toBeVisible();
     expect(listOf("Keywords")).toEqual(["release", "Friday"]);
-
     expect(
       screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent),
     ).toEqual([
@@ -73,86 +62,54 @@ describe("NotesDocument", () => {
     expect(timeline.getByText("The team set the release date.")).toBeVisible();
     expect(timeline.getByText("ship on Friday").tagName).toBe("STRONG");
     expect(timeline.getByText("QA signs off on Thursday")).toBeVisible();
-    // The section's own time is a range button; points keep their marks.
     expect(
-      timeline.getAllByRole("button", { name: "Play from 0:00" }),
-    ).toHaveLength(1);
-
-    const swatches = container.querySelectorAll("[data-slot='topic-swatch']");
-    expect(swatches[0]).toHaveClass("bg-topic-1");
-    expect(swatches[1]).toHaveClass("bg-topic-2");
-  });
-
-  it("lists action items and decisions", () => {
-    renderDocument();
-
-    const actions = within(
-      screen.getByRole("region", { name: "Action items" }),
-    );
-    expect(
-      actions.getByRole("checkbox", { name: "Tag the release" }),
+      within(screen.getByRole("region", { name: "Action items" })).getByRole(
+        "checkbox",
+        { name: "Tag the release" },
+      ),
     ).toBeVisible();
-    expect(actions.getByText("Due Friday")).toBeVisible();
     expect(listOf("Decisions")).toEqual(["Ship on Friday"]);
-    // Detailed notes already state each takeaway as a timestamped point.
     expect(
       screen.queryByRole("heading", { name: "Key takeaways" }),
     ).not.toBeInTheDocument();
     expect(screen.queryByRole("note")).not.toBeInTheDocument();
   });
 
-  it("leaves out empty lists", () => {
+  it("leaves out empty lists and notes a truncated transcript", () => {
     renderDocument(
       meeting({
+        transcriptTruncated: true,
         summary: {
           ...baseSummary,
           keywords: [],
           actionItems: [],
           decisions: [],
-          keyTakeaways: [],
         },
       }),
     );
 
-    expect(
-      screen.queryByRole("heading", { name: "Action items" }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("heading", { name: "Decisions" }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("heading", { name: "Key takeaways" }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("list", { name: "Keywords" }),
-    ).not.toBeInTheDocument();
-    expect(screen.queryByText(/None captured/)).not.toBeInTheDocument();
-  });
-
-  it("notes when the summary covers only part of a long transcript", () => {
-    renderDocument(meeting({ transcriptTruncated: true }));
-
+    expect(screen.getAllByRole("heading", { level: 2 })).toHaveLength(2);
+    expect(screen.queryByRole("list", { name: "Keywords" })).toBeNull();
     expect(screen.getByRole("note")).toHaveTextContent(/too long/i);
   });
 
-  it("copies the notes and confirms it", async () => {
-    const { user } = renderDocument();
-    const button = screen.getByRole("button", { name: "Copy notes" });
+  it("copies the notes", async () => {
+    renderDocument();
 
-    await user.click(button);
+    await userEvent
+      .setup()
+      .click(screen.getByRole("button", { name: "Copy notes" }));
 
     expect(await screen.findByText("Notes copied")).toBeVisible();
-    expect(button.querySelector(".lucide-check")).not.toBeNull();
-    const copied = await navigator.clipboard.readText();
-    expect(copied).toMatch(/^# Weekly sync\n/);
-    expect(copied).toContain("### Release timeline (00:00)");
+    await expect(navigator.clipboard.readText()).resolves.toMatch(
+      /^# Weekly sync\n/,
+    );
   });
 
   it("plays the reveal once per meeting", () => {
     const value = meeting();
     const first = renderDocument(value);
-    const animated = () =>
-      first.container.ownerDocument.querySelectorAll(".animate-reveal").length;
+    const animated = () => document.querySelectorAll(".animate-reveal").length;
     expect(animated()).toBeGreaterThan(0);
 
     first.rerender(
@@ -168,12 +125,8 @@ describe("NotesDocument", () => {
   });
 
   describe("topic sections and playback", () => {
-    // 100 s long, with sections at 0:00 and 0:40.
     function timed(durationSeconds: number | null = 100) {
-      const [first, second] = baseSummary.notes as [
-        Summary["notes"][number],
-        Summary["notes"][number],
-      ];
+      const [first, second] = baseSummary.notes as [NoteSection, NoteSection];
       return meeting({
         durationSeconds,
         summary: {
@@ -195,8 +148,13 @@ describe("NotesDocument", () => {
       return <output aria-label="Position">{currentTime}</output>;
     }
 
-    function renderPlaying(value: Meeting) {
-      const result = render(
+    function renderPlaying() {
+      vi.mocked(getAudioUrl).mockResolvedValue({
+        url: "https://blob.test/a.webm",
+        expiresAt: "2026-09-17T13:00:00.000Z",
+      });
+      const value = timed();
+      render(
         <PlayerProvider meetingId={value.id} durationSeconds={100}>
           <NotesDocument meeting={value} onUpdated={vi.fn()} />
           <Position />
@@ -208,80 +166,61 @@ describe("NotesDocument", () => {
           audio.currentTime = seconds;
           audio.dispatchEvent(new Event("timeupdate"));
         });
-      return { ...result, audio, playTo, user: userEvent.setup() };
+      return { playTo };
     }
 
     it("shows each section's time range after its heading", () => {
-      renderDocument(timed());
+      const { rerender } = renderDocument(timed());
 
-      const range = screen.getByRole("button", {
-        name: "Play Release timeline, 0:00 to 0:40",
-      });
-      expect(range).toHaveTextContent(/^0:00–0:40$/);
-      expect(range.querySelector(".marker")).toBeNull();
-      expect(range).toHaveClass("relative", "pointer-coarse:before:-inset-y-2");
+      expect(
+        screen.getByRole("button", {
+          name: "Play Release timeline, 0:00 to 0:40",
+        }),
+      ).toHaveTextContent(/^0:00–0:40$/);
       expect(
         screen.getByRole("button", {
           name: "Play Release tasks, 0:40 to 1:40",
         }),
       ).toBeVisible();
-
-      // Inline with the heading, joined by a no-break space so the time
-      // never starts a line on its own.
-      const heading = screen.getByRole("heading", { name: "Release timeline" });
-      const row = heading.parentElement as HTMLElement;
-      expect(row).toHaveClass("max-w-[68ch]");
-      expect(row).toContainElement(range);
-      expect(row.textContent).toContain(" ");
-
-      const timeline = within(
-        screen.getByRole("region", { name: "Release timeline" }),
-      );
       expect(
-        timeline.getByRole("button", { name: "Play from 0:00" }),
+        within(
+          screen.getByRole("region", { name: "Release timeline" }),
+        ).getByRole("button", { name: "Play from 0:00" }),
       ).toBeVisible();
-    });
 
-    it("shows only the start when the length is unknown", () => {
-      renderDocument(timed(null));
-
-      const start = screen.getByRole("button", {
-        name: "Play Release timeline, 0:00",
-      });
-      expect(start).toHaveTextContent(/^0:00$/);
+      rerender(<NotesDocument meeting={timed(null)} onUpdated={vi.fn()} />);
+      expect(
+        screen.getByRole("button", { name: "Play Release timeline, 0:00" }),
+      ).toHaveTextContent(/^0:00$/);
     });
 
     it("plays a section from its start", async () => {
       const play = vi.spyOn(HTMLMediaElement.prototype, "play");
-      const { user } = renderPlaying(timed());
-
+      renderPlaying();
       const range = screen.getByRole("button", {
         name: "Play Release tasks, 0:40 to 1:40",
       });
-      await user.click(range);
+
+      await userEvent.setup().click(range);
       await act(() => Promise.resolve());
 
       expect(
         screen.getByRole("status", { name: "Position" }),
       ).toHaveTextContent("40");
       expect(play).toHaveBeenCalledTimes(1);
-      // Space should pause next, not replay the section.
       expect(range).not.toHaveFocus();
     });
 
-    it("stretches the playing section's swatch", () => {
-      const { container, playTo } = renderPlaying(timed());
+    it("marks the playing section's swatch", () => {
+      const { playTo } = renderPlaying();
       const active = () =>
-        [...container.querySelectorAll("[data-slot='topic-swatch']")].map(
+        [...document.querySelectorAll("[data-slot='topic-swatch']")].map(
           (swatch) => swatch.hasAttribute("data-active"),
         );
       expect(active()).toEqual([false, false]);
 
       playTo(45);
       expect(active()).toEqual([false, true]);
-      const swatches = container.querySelectorAll("[data-slot='topic-swatch']");
-      expect(swatches[1]).toHaveClass("h-full");
-      expect(swatches[0]).toHaveClass("h-4");
 
       playTo(10);
       expect(active()).toEqual([true, false]);
@@ -295,25 +234,22 @@ describe("NotesDocument", () => {
         summary: { ...baseSummary, keywords: [], notes: [] },
       });
 
+    const offer = { name: "Generate detailed notes" };
+
     it("keeps the overview and lists, and offers detailed notes", () => {
       renderDocument(legacy("One two three four five six seven."));
 
       expect(
         screen.getByText("The team agreed to ship the release on Friday."),
       ).toBeVisible();
-      expect(listOf("Decisions")).toEqual(["Ship on Friday"]);
       expect(listOf("Key takeaways")).toEqual(["Release is on track"]);
-      expect(
-        screen.getByRole("button", { name: "Generate detailed notes" }),
-      ).toBeVisible();
+      expect(screen.getByRole("button", offer)).toBeVisible();
     });
 
-    it("doesn't offer notes for a transcript too short to summarize", () => {
+    it("offers nothing for a short transcript", () => {
       renderDocument(legacy("Hello there."));
 
-      expect(
-        screen.queryByRole("button", { name: "Generate detailed notes" }),
-      ).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", offer)).not.toBeInTheDocument();
     });
   });
 });

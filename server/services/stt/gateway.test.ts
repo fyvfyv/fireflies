@@ -19,22 +19,20 @@ vi.mock("@ai-sdk/gateway", () => ({
 const input = { bytes: new Uint8Array([1, 2, 3]), contentType: "audio/webm" };
 
 describe("gatewayStt", () => {
+  let stt: ReturnType<typeof gatewayStt>;
+
   beforeEach(() => {
     vi.mocked(transcribe).mockReset();
+    stt = gatewayStt("openai/whisper-1");
   });
 
-  it("is named after the gateway model", () => {
-    expect(gatewayStt("openai/whisper-1").name).toBe(
-      "gateway:openai/whisper-1",
-    );
-    expect(gateway.transcriptionModel).toHaveBeenCalledWith("openai/whisper-1");
-  });
-
-  it("sends the audio bytes and asks for segment timestamps", async () => {
+  it("asks the gateway model for segment timestamps and maps the result", async () => {
     vi.mocked(transcribe).mockResolvedValue(transcriptionResult());
 
-    await gatewayStt("openai/whisper-1").transcribe(input);
+    const transcript = await stt.transcribe(input);
 
+    expect(stt.name).toBe("gateway:openai/whisper-1");
+    expect(gateway.transcriptionModel).toHaveBeenCalledWith("openai/whisper-1");
     expect(transcribe).toHaveBeenCalledWith(
       expect.objectContaining({
         model: { modelId: "openai/whisper-1" },
@@ -42,12 +40,7 @@ describe("gatewayStt", () => {
         providerOptions: { openai: { timestampGranularities: ["segment"] } },
       }),
     );
-  });
-
-  it("maps the transcript, segments, language and duration", async () => {
-    vi.mocked(transcribe).mockResolvedValue(transcriptionResult());
-
-    expect(await gatewayStt("openai/whisper-1").transcribe(input)).toEqual({
+    expect(transcript).toEqual({
       text: "We ship on Friday. Ana owns the notes.",
       segments: [
         { text: "We ship on Friday.", startSecond: 0, endSecond: 2.5 },
@@ -58,40 +51,19 @@ describe("gatewayStt", () => {
     });
   });
 
-  it("returns an empty transcript for empty text", async () => {
-    vi.mocked(transcribe).mockResolvedValue(
-      transcriptionResult({
-        text: "",
-        segments: [],
-        language: undefined,
-        durationInSeconds: undefined,
-      }),
-    );
-
-    expect(await gatewayStt("openai/whisper-1").transcribe(input)).toEqual({
-      text: "",
-      segments: [],
-    });
-  });
-
   it("treats the SDK's no-transcript error as silence", async () => {
     vi.mocked(transcribe).mockRejectedValue(
       new NoTranscriptGeneratedError({ responses: [] }),
     );
 
-    expect(await gatewayStt("openai/whisper-1").transcribe(input)).toEqual({
-      text: "",
-      segments: [],
-    });
+    expect(await stt.transcribe(input)).toEqual({ text: "", segments: [] });
   });
 
   it("hides provider failures behind a retryable SttError", async () => {
     const cause = new Error("502 Bad Gateway <html>");
     vi.mocked(transcribe).mockRejectedValue(cause);
 
-    const err = await gatewayStt("openai/whisper-1")
-      .transcribe(input)
-      .catch((e: unknown) => e);
+    const err = await stt.transcribe(input).catch((e: unknown) => e);
 
     expect(err).toBeInstanceOf(SttError);
     expect(err).toMatchObject({

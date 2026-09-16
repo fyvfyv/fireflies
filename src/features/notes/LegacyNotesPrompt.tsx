@@ -7,14 +7,11 @@ import { ApiError, errorMessage, regenerateNotes } from "@/lib/api";
 
 type LegacyNotesPromptProps = {
   meetingId: string;
-  /** The notes request finished (either way); the page should refetch. */
   onUpdated: () => void;
-  /** Lets the page poll while the notes are written. */
   onBusyChange?: (busy: boolean) => void;
   className?: string;
 };
 
-/** Offered on meetings summarized before topic notes existed. */
 export function LegacyNotesPrompt({
   meetingId,
   onUpdated,
@@ -28,7 +25,6 @@ export function LegacyNotesPrompt({
     setBusy(true);
     onBusyChange?.(true);
     try {
-      // A failed run comes back as a failed meeting, which the page shows.
       await regenerateNotes(meetingId);
     } catch (err) {
       // 409: another tab started it already; the refetch shows the run.

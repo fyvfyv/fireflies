@@ -1,7 +1,7 @@
 import type { Meeting } from "@shared/schemas";
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Toaster } from "@/components/ui/Toaster";
 import { ApiError, regenerateNotes } from "@/lib/api";
 import { meetingFixture } from "@/test/fixtures";
@@ -14,7 +14,14 @@ vi.mock("@/lib/api", async (importOriginal) => ({
 
 const mockedRegenerate = vi.mocked(regenerateNotes);
 
-function renderPrompt() {
+const refuse = (status: number, message: string) =>
+  mockedRegenerate.mockRejectedValue(
+    new ApiError({ status, code: "x", message, retryable: false }),
+  );
+const idleButton = () =>
+  screen.getByRole("button", { name: "Generate detailed notes" });
+
+async function renderAndGenerate() {
   const onUpdated = vi.fn();
   const onBusyChange = vi.fn();
   render(
@@ -27,12 +34,14 @@ function renderPrompt() {
       <Toaster />
     </>,
   );
-  return { onUpdated, onBusyChange, user: userEvent.setup() };
+  expect(
+    screen.getByText(
+      "This meeting has a short summary. Generate detailed notes with timestamps.",
+    ),
+  ).toBeVisible();
+  await userEvent.setup().click(idleButton());
+  return { onUpdated, onBusyChange };
 }
-
-beforeEach(() => {
-  mockedRegenerate.mockReset();
-});
 
 describe("LegacyNotesPrompt", () => {
   it("generates detailed notes, then asks for the updated meeting", async () => {
@@ -42,16 +51,7 @@ describe("LegacyNotesPrompt", () => {
         finish = resolve;
       }),
     );
-    const { onUpdated, onBusyChange, user } = renderPrompt();
-    expect(
-      screen.getByText(
-        "This meeting has a short summary. Generate detailed notes with timestamps.",
-      ),
-    ).toBeVisible();
-
-    await user.click(
-      screen.getByRole("button", { name: "Generate detailed notes" }),
-    );
+    const { onUpdated, onBusyChange } = await renderAndGenerate();
 
     expect(mockedRegenerate).toHaveBeenCalledWith("abc");
     expect(onBusyChange).toHaveBeenLastCalledWith(true);
@@ -66,48 +66,25 @@ describe("LegacyNotesPrompt", () => {
     expect(onBusyChange).toHaveBeenLastCalledWith(false);
   });
 
-  it("shows why notes weren't generated", async () => {
-    mockedRegenerate.mockRejectedValue(
-      new ApiError({
-        status: 422,
-        code: "notes_current",
-        message: "These notes are already up to date.",
-        retryable: false,
-      }),
-    );
-    const { onUpdated, user } = renderPrompt();
+  it("shows a refused request and refetches", async () => {
+    refuse(422, "These notes are already up to date.");
+    const { onUpdated } = await renderAndGenerate();
 
-    await user.click(
-      screen.getByRole("button", { name: "Generate detailed notes" }),
-    );
-
+    await waitFor(() => expect(onUpdated).toHaveBeenCalledTimes(1));
     expect(
-      await screen.findByText("These notes are already up to date."),
-    ).toBeVisible();
-    expect(onUpdated).toHaveBeenCalledTimes(1);
-    expect(
-      screen.getByRole("button", { name: "Generate detailed notes" }),
-    ).not.toHaveAttribute("aria-busy");
+      screen.getByText("These notes are already up to date."),
+    ).toBeInTheDocument();
+    expect(idleButton()).not.toHaveAttribute("aria-busy");
   });
 
-  it("stays quiet when another tab already started", async () => {
-    mockedRegenerate.mockRejectedValue(
-      new ApiError({
-        status: 409,
-        code: "already_processing",
-        message: "Meeting is already being processed",
-        retryable: false,
-      }),
-    );
-    const { onUpdated, user } = renderPrompt();
+  it("stays quiet when another tab already started the run", async () => {
+    refuse(409, "Meeting is already being processed");
+    const { onUpdated } = await renderAndGenerate();
 
-    await user.click(
-      screen.getByRole("button", { name: "Generate detailed notes" }),
-    );
-
-    expect(onUpdated).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(onUpdated).toHaveBeenCalledTimes(1));
     expect(
       screen.queryByText("Meeting is already being processed"),
     ).not.toBeInTheDocument();
+    expect(idleButton()).not.toHaveAttribute("aria-busy");
   });
 });

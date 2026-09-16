@@ -71,9 +71,8 @@ import { formatDayTime, formatShortTime } from "@/lib/time";
 const isApiStatus = (err: unknown, status: number) =>
   err instanceof ApiError && err.status === status;
 
-// Below this width the transcript moves from the side rail into a tab.
 const WIDE_QUERY = "(min-width: 1180px)";
-// Where the rail sticks (its `top-4`).
+// Matches the rail's `top-4`.
 const RAIL_STICKY_TOP_PX = 16;
 
 type Tab = "notes" | "actions" | "transcript";
@@ -88,8 +87,7 @@ export function MeetingPage() {
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [regenerating, setRegenerating] = useState(false);
-  // The retry and notes requests only return when the run ends (up to
-  // 300 s), so the page polls meanwhile to show the steps as they happen.
+  // Retry and regenerate resolve only when the run ends (up to 300 s); poll meanwhile.
   const { meeting, notFound, error, refetch } = useMeeting(id, {
     keepPolling: retrying || regenerating,
   });
@@ -109,7 +107,7 @@ export function MeetingPage() {
     try {
       await processMeeting(id);
     } catch (err) {
-      // 409: another tab already restarted the run, and polling shows it.
+      // 409: another tab already restarted the run; polling shows it.
       if (!isApiStatus(err, 409)) setRetryError(errorMessage(err));
     }
     await refetch();
@@ -128,10 +126,7 @@ export function MeetingPage() {
         return;
       }
     }
-    // The toast store is module-level and the Toaster lives in the layout,
-    // so the confirmation survives the route change.
     toast({ title: "Meeting deleted" });
-    // Replaced so Back doesn't return to a page that no longer exists.
     navigate("/", { replace: true });
   };
 
@@ -156,25 +151,21 @@ export function MeetingPage() {
   }
 
   const problem = meeting.status === "failed" || meeting.stalled;
-  // Nothing else would start a meeting whose automatic start failed.
   const waitingError =
     !problem && meeting.status === "uploaded"
       ? (retryError ?? startError)
       : null;
-  const hasAudio = Boolean(meeting.audioPathname);
 
   return (
     <PlayerProvider
       key={meeting.id}
       meetingId={meeting.id}
       durationSeconds={meeting.durationSeconds}
-      shortcuts={hasAudio}
     >
       <MeetingView
         meeting={meeting}
         loadError={error}
         onReload={refetch}
-        hasAudio={hasAudio}
         notice={
           problem ? (
             <FailedBanner
@@ -216,7 +207,6 @@ function MeetingView({
   meeting,
   loadError,
   onReload,
-  hasAudio,
   notice,
   onRegeneratingChange,
   remove,
@@ -224,11 +214,6 @@ function MeetingView({
   meeting: Meeting;
   loadError: string | null;
   onReload: () => Promise<void>;
-  hasAudio: boolean;
-  /**
-   * A failed or interrupted run, or a start that failed. Shown above the
-   * tabs, since no tab has its content until it is resolved.
-   */
   notice: ReactNode;
   onRegeneratingChange: (busy: boolean) => void;
   remove: RemoveControls;
@@ -259,8 +244,6 @@ function MeetingView({
 
   const selectTab = (value: string) => {
     setTab(value);
-    // With the tab row stuck to the top, a new tab should start at its own
-    // top rather than at the old tab's scroll depth.
     const root = tabsRef.current;
     if (!wide && root && root.getBoundingClientRect().top < 0) {
       requestAnimationFrame(() => root.scrollIntoView({ block: "start" }));
@@ -269,8 +252,7 @@ function MeetingView({
 
   return (
     <div
-      // The header is 56px plus its hairline; filling the rest keeps the
-      // player bar at the bottom edge on short pages.
+      // 3.5rem + 1px is the layout header and its hairline.
       className={tw("flex min-h-[calc(100dvh-3.5rem-1px)] flex-col")}
       style={{ "--player-height": `${playerHeight}px` } as CSSProperties}
     >
@@ -299,7 +281,15 @@ function MeetingView({
               "-mx-4 min-w-0 border-y border-rule bg-sheet sm:mx-0 sm:rounded-sheet sm:border-x",
             )}
           >
-            <TitleBlock meeting={meeting} titleId={titleId} />
+            <div className={tw("px-5 pt-6 md:px-10 md:pt-9")}>
+              <h1
+                id={titleId}
+                className={tw("type-title text-balance break-words text-ink")}
+              >
+                {meeting.title}
+              </h1>
+              <MeetingMeta meeting={meeting} />
+            </div>
             {notice && <div className={tw("mt-6 px-5 md:px-10")}>{notice}</div>}
             <Tabs
               ref={tabsRef}
@@ -309,8 +299,6 @@ function MeetingView({
             >
               <TabsList
                 aria-label="Meeting sections"
-                // Below the rail breakpoint the tabs are the page's only
-                // navigation, so they stay at hand while scrolling.
                 className={tw(
                   "px-5 md:px-10 max-[1180px]:sticky max-[1180px]:top-0 max-[1180px]:z-20 max-[1180px]:bg-sheet",
                 )}
@@ -362,22 +350,15 @@ function MeetingView({
           {wide && <TranscriptRail>{transcript}</TranscriptRail>}
         </div>
       </div>
-      {hasAudio && (
-        <PlayerBar
-          sections={sections}
-          actionItems={actionItems}
-          onHeightChange={setPlayerHeight}
-        />
-      )}
+      <PlayerBar
+        sections={sections}
+        actionItems={actionItems}
+        onHeightChange={setPlayerHeight}
+      />
     </div>
   );
 }
 
-/**
- * The rail sticks near the top of the window but starts lower, below the
- * page header. Its height follows its current top, so its end (and the jump
- * pill there) stays above the player bar before it sticks too.
- */
 function TranscriptRail({ children }: { children: ReactNode }) {
   const ref = useRef<HTMLElement>(null);
 
@@ -414,7 +395,6 @@ function TranscriptRail({ children }: { children: ReactNode }) {
     <aside
       ref={ref}
       className={tw(
-        // Ends 1rem above the player bar.
         "sticky top-4 flex max-h-[calc(100dvh-var(--player-height)-var(--rail-top,1rem)-1rem)] min-h-0 flex-col rounded-sheet border border-rule bg-sheet",
       )}
     >
@@ -466,8 +446,7 @@ function MeetingMenu({
   const { toast } = useToast();
   const [confirming, setConfirming] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  // Set when the delete item opens the confirmation, so the closing menu
-  // doesn't pull focus back to its trigger.
+  // Keeps the closing menu from pulling focus back to its trigger.
   const handingOff = useRef(false);
 
   const notes = useCopyAction(
@@ -499,7 +478,7 @@ function MeetingMenu({
   const downloadAudio = async () => {
     // Opened before the request: browsers block windows opened after an await.
     const tab = window.open("", "_blank");
-    // The signed URL is another origin; it gets no handle back to this page.
+    // The signed URL is another origin; give it no handle back to this page.
     if (tab) tab.opener = null;
     try {
       const { url } = await getAudioUrl(meeting.id);
@@ -561,7 +540,6 @@ function MeetingMenu({
         onConfirm={remove.onConfirm}
         deleting={remove.deleting}
         error={remove.error}
-        // There is no popover trigger to return to; the menu button stands in.
         onCloseAutoFocus={(event) => {
           event.preventDefault();
           triggerRef.current?.focus();
@@ -571,37 +549,14 @@ function MeetingMenu({
   );
 }
 
-function TitleBlock({
-  meeting,
-  titleId,
-}: {
-  meeting: Meeting;
-  titleId: string;
-}) {
-  return (
-    <div className={tw("px-5 pt-6 md:px-10 md:pt-9")}>
-      <h1
-        id={titleId}
-        className={tw("type-title text-balance break-words text-ink")}
-      >
-        {meeting.title}
-      </h1>
-      <MeetingMeta meeting={meeting} />
-    </div>
-  );
-}
-
 const languageNames = new Intl.DisplayNames("en", { type: "language" });
 
-// Whisper-style providers may report a lowercase name ("english") instead of
-// a code, which DisplayNames returns unchanged or rejects.
+// Some providers report a name ("english"), which DisplayNames echoes or rejects.
 function languageName(language: string): string {
   try {
     const name = languageNames.of(language);
     if (name && name !== language) return name;
-  } catch {
-    // Not a valid language tag; fall back to what the provider reported.
-  }
+  } catch {}
   return language.charAt(0).toUpperCase() + language.slice(1);
 }
 
@@ -662,7 +617,6 @@ function ProcessingView({
   problem,
 }: {
   meeting: Meeting;
-  /** Failed or stalled: nothing is on its way, so no skeleton. */
   problem: boolean;
 }) {
   return (
@@ -798,10 +752,6 @@ function useMediaQuery(query: string): boolean {
   );
 }
 
-/**
- * The selected tab lives in the URL hash so a link opens the same view.
- * Unknown hashes (and the transcript on wide screens) fall back to notes.
- */
 function useHashTab(allowed: readonly Tab[]): [Tab, (value: string) => void] {
   const location = useLocation();
   const navigate = useNavigate();
@@ -814,14 +764,12 @@ function useHashTab(allowed: readonly Tab[]): [Tab, (value: string) => void] {
         search: location.search,
         hash: `#${value}`,
       },
-      // Tabs are views of one page; Back should leave the meeting.
       { replace: true, preventScrollReset: true },
     );
   };
   return [tab, select];
 }
 
-/** Announces notes that finish while the page is open. */
 function useReadyAnnouncement(status: MeetingStatus): string {
   const [seen, setSeen] = useState(status);
   const [message, setMessage] = useState("");

@@ -32,37 +32,15 @@ function renderBanner(props: Partial<ComponentProps<typeof FailedBanner>>) {
   return { onRetry, onDelete, user: userEvent.setup() };
 }
 
+const retryButton = () => screen.queryByRole("button", { name: "Retry" });
+
 describe("FailedBanner", () => {
-  it("is a labelled region", () => {
-    renderBanner({});
-
-    expect(
-      screen.getByRole("region", { name: "Couldn't transcribe the recording" }),
-    ).toBeVisible();
-  });
-
-  it("shows why a delete failed", async () => {
-    const { user } = renderBanner({
-      meeting: failed({ errorRetryable: false }),
-      deleteError: "Database unavailable",
-    });
-
-    await user.click(
-      screen.getByRole("button", { name: "Delete and re-upload" }),
-    );
-
-    expect(
-      within(screen.getByRole("dialog")).getByRole("alert"),
-    ).toHaveTextContent("Database unavailable");
-  });
-
   it("explains a failed transcription and offers a retry", async () => {
     const { onRetry, user } = renderBanner({});
 
-    expect(screen.getByText("Couldn't transcribe the recording")).toBeVisible();
     expect(
-      screen.getByText("Speech-to-text provider is unavailable"),
-    ).toBeVisible();
+      screen.getByRole("region", { name: "Couldn't transcribe the recording" }),
+    ).toHaveTextContent("Speech-to-text provider is unavailable");
     expect(
       screen.queryByRole("button", { name: "Delete and re-upload" }),
     ).not.toBeInTheDocument();
@@ -71,42 +49,39 @@ describe("FailedBanner", () => {
     expect(onRetry).toHaveBeenCalledTimes(1);
   });
 
-  it("tells the user a summary retry keeps the transcript", () => {
+  it("tells the user a notes retry keeps the transcript", () => {
     renderBanner({ meeting: failed({ errorStep: "summarize" }) });
 
-    expect(screen.getByText("Couldn't write the notes")).toBeVisible();
-    expect(screen.getByText(/transcript is saved/i)).toBeVisible();
+    expect(
+      screen.getByRole("region", { name: "Couldn't write the notes" }),
+    ).toHaveTextContent(/transcript is saved/);
   });
 
   it("offers a retry for an interrupted run", () => {
     renderBanner({
-      meeting: meetingFixture({
-        status: "transcribing",
-        summary: null,
-        stalled: true,
-      }),
+      meeting: meetingFixture({ status: "transcribing", stalled: true }),
     });
 
-    expect(screen.getByText("Processing was interrupted")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
+    expect(
+      screen.getByRole("region", { name: "Processing was interrupted" }),
+    ).toBeVisible();
+    expect(retryButton()).toBeEnabled();
   });
 
   it("offers only deletion when the error is permanent", async () => {
     const { onDelete, user } = renderBanner({
       meeting: failed({ errorRetryable: false }),
+      deleteError: "Database unavailable",
     });
 
-    expect(
-      screen.queryByRole("button", { name: "Retry" }),
-    ).not.toBeInTheDocument();
+    expect(retryButton()).not.toBeInTheDocument();
+    expect(screen.getByText(/Retrying won't fix this/)).toBeVisible();
     await user.click(
       screen.getByRole("button", { name: "Delete and re-upload" }),
     );
-    await user.click(
-      within(screen.getByRole("dialog")).getByRole("button", {
-        name: "Delete",
-      }),
-    );
+    const dialog = within(screen.getByRole("dialog"));
+    expect(dialog.getByRole("alert")).toHaveTextContent("Database unavailable");
+    await user.click(dialog.getByRole("button", { name: "Delete" }));
 
     expect(onDelete).toHaveBeenCalledTimes(1);
   });
@@ -114,9 +89,7 @@ describe("FailedBanner", () => {
   it("stops offering retries after too many attempts", () => {
     renderBanner({ meeting: failed({ attempts: MAX_ATTEMPTS }) });
 
-    expect(
-      screen.queryByRole("button", { name: "Retry" }),
-    ).not.toBeInTheDocument();
+    expect(retryButton()).not.toBeInTheDocument();
     expect(screen.getByText(/failed 5 times/)).toBeVisible();
     expect(
       screen.getByRole("button", { name: "Delete and re-upload" }),
@@ -129,9 +102,8 @@ describe("FailedBanner", () => {
       retryError: "Can't reach the server.",
     });
 
-    const button = screen.getByRole("button", { name: "Retrying…" });
-    expect(button).toHaveAttribute("aria-disabled", "true");
-    await user.click(button);
+    await user.click(screen.getByRole("button", { name: "Retrying…" }));
+
     expect(onRetry).not.toHaveBeenCalled();
     expect(screen.getByRole("alert")).toHaveTextContent(
       "Can't reach the server.",

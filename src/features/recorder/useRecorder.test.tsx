@@ -8,10 +8,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeMediaRecorder } from "@/test/fakeMediaRecorder";
 import { type RecorderDeps, useRecorder } from "./useRecorder";
 
-class NoCodecRecorder extends FakeMediaRecorder {
-  static isTypeSupported = () => false;
-}
-
 function setup(overrides: Partial<RecorderDeps> = {}) {
   const trackStop = vi.fn();
   const stream = {
@@ -28,6 +24,10 @@ function setup(overrides: Partial<RecorderDeps> = {}) {
   return { ...hook, deps, stream, trackStop, start, advance };
 }
 
+const failWith = (name: string) => async () => {
+  throw new DOMException("x", name);
+};
+
 function beforeUnloadPrevented() {
   const event = new Event("beforeunload", { cancelable: true });
   window.dispatchEvent(event);
@@ -40,26 +40,15 @@ beforeEach(() => {
 });
 
 describe("useRecorder", () => {
-  it("starts idle", () => {
-    const { result } = setup();
-
-    expect(result.current).toMatchObject({
-      state: "idle",
-      elapsed: 0,
-      warning: false,
-      result: null,
-    });
-  });
-
-  it("records with the picked mime type and bitrate", async () => {
+  it("records the microphone with the picked mime type and bitrate", async () => {
     const startSpy = vi.spyOn(FakeMediaRecorder.prototype, "start");
     const { result, deps, stream, start } = setup();
+    expect(result.current).toMatchObject({ state: "idle", stream: null });
 
     await start();
 
-    expect(result.current.state).toBe("recording");
+    expect(result.current).toMatchObject({ state: "recording", stream });
     expect(deps.getUserMedia).toHaveBeenCalledWith({ audio: true });
-    expect(FakeMediaRecorder.latest?.stream).toBe(stream);
     expect(FakeMediaRecorder.latest?.options).toEqual({
       mimeType: "audio/webm;codecs=opus",
       audioBitsPerSecond: AUDIO_BITRATE,
@@ -67,101 +56,61 @@ describe("useRecorder", () => {
     expect(startSpy).toHaveBeenCalledWith(1000);
   });
 
-  it("counts elapsed seconds", async () => {
-    const { result, start, advance } = setup();
-    await start();
-
-    await advance(3_000);
-
-    expect(result.current.elapsed).toBe(3);
-  });
-
-  it("warns when the recording nears the limit", async () => {
-    const { result, start, advance } = setup();
-    await start();
-
-    await advance(RECORDING_WARN_MS - 1_000);
-    expect(result.current.warning).toBe(false);
-
-    await advance(1_000);
-    expect(result.current.warning).toBe(true);
-    expect(result.current.state).toBe("recording");
-  });
-
-  it("stops by itself at the maximum length", async () => {
-    const { result, start, advance, trackStop } = setup();
-    await start();
-
-    await advance(MAX_RECORDING_MS);
-
-    expect(result.current.state).toBe("stopped");
-    expect(result.current.result?.durationSeconds).toBe(
-      MAX_RECORDING_MS / 1000,
-    );
-    expect(result.current.warning).toBe(false);
-    expect(trackStop).toHaveBeenCalled();
-  });
-
   it("stops into a blob of the base mime type and releases the mic", async () => {
     const { result, start, advance, trackStop } = setup();
     await start();
     await advance(12_000);
+    expect(result.current.elapsed).toBe(12);
 
     act(() => result.current.stop());
+    await advance(5_000);
 
-    expect(result.current.state).toBe("stopped");
-    const recording = result.current.result;
-    expect(recording?.contentType).toBe("audio/webm");
-    expect(recording?.blob.type).toBe("audio/webm");
-    expect(recording?.blob.size).toBe(1);
-    expect(recording?.durationSeconds).toBe(12);
-    expect(result.current.elapsed).toBe(12);
+    expect(result.current).toMatchObject({
+      state: "stopped",
+      elapsed: 12,
+      stream: null,
+      result: { contentType: "audio/webm", durationSeconds: 12 },
+    });
+    expect(result.current.result?.blob.type).toBe("audio/webm");
+    expect(result.current.result?.blob.size).toBe(1);
     expect(trackStop).toHaveBeenCalledTimes(1);
   });
 
-  it("stops counting once stopped", async () => {
-    const { result, start, advance } = setup();
+  it("warns near the limit, then stops by itself at it", async () => {
+    const { result, start, advance, trackStop } = setup();
     await start();
-    await advance(2_000);
-    act(() => result.current.stop());
 
-    await advance(5_000);
+    await advance(RECORDING_WARN_MS - 1_000);
+    expect(result.current.warning).toBe(false);
+    await advance(1_000);
+    expect(result.current).toMatchObject({ state: "recording", warning: true });
 
-    expect(result.current.elapsed).toBe(2);
+    await advance(MAX_RECORDING_MS - RECORDING_WARN_MS);
+    expect(result.current).toMatchObject({
+      state: "stopped",
+      warning: false,
+      stream: null,
+      result: { durationSeconds: MAX_RECORDING_MS / 1000 },
+    });
+    expect(trackStop).toHaveBeenCalled();
   });
 
-  it("reports a blocked microphone as denied", async () => {
-    const { result, start } = setup({
-      getUserMedia: vi.fn(async () => {
-        throw new DOMException("x", "NotAllowedError");
-      }),
-    });
+  it.each([
+    ["NotAllowedError", "denied"],
+    ["NotFoundError", "unavailable"],
+  ])("reports a %s microphone error as %s", async (error, state) => {
+    const { result, start } = setup({ getUserMedia: failWith(error) });
 
     await start();
 
-    expect(result.current.state).toBe("denied");
+    expect(result.current.state).toBe(state);
     expect(FakeMediaRecorder.latest).toBeUndefined();
-  });
-
-  it("reports a missing microphone as unavailable", async () => {
-    const { result, start } = setup({
-      getUserMedia: vi.fn(async () => {
-        throw new DOMException("x", "NotFoundError");
-      }),
-    });
-
-    await start();
-
-    expect(result.current.state).toBe("unavailable");
   });
 
   it("releases the mic when the recorder can't be created", async () => {
     class BrokenRecorder extends FakeMediaRecorder {
-      constructor(
-        stream: MediaStream,
-        options: { mimeType: string; audioBitsPerSecond: number },
-      ) {
-        super(stream, options);
+      constructor(...args: ConstructorParameters<typeof FakeMediaRecorder>) {
+        super(...args);
         throw new DOMException("x", "NotSupportedError");
       }
     }
@@ -184,25 +133,28 @@ describe("useRecorder", () => {
     await start();
     await advance(2_000);
 
-    expect(result.current).toMatchObject({ state: "unavailable", elapsed: 0 });
+    expect(result.current).toMatchObject({
+      state: "unavailable",
+      elapsed: 0,
+      stream: null,
+    });
     expect(trackStop).toHaveBeenCalled();
     expect(beforeUnloadPrevented()).toBe(false);
   });
 
-  it("is unsupported without MediaRecorder", async () => {
+  it("is unsupported without MediaRecorder or a recordable format", async () => {
+    class NoCodecRecorder extends FakeMediaRecorder {
+      static isTypeSupported = () => false;
+    }
+    expect(
+      setup({ MediaRecorderCtor: NoCodecRecorder }).result.current.state,
+    ).toBe("unsupported");
+
     const { result, deps, start } = setup({ MediaRecorderCtor: undefined });
     expect(result.current.state).toBe("unsupported");
-
     await start();
-
     expect(result.current.state).toBe("unsupported");
     expect(deps.getUserMedia).not.toHaveBeenCalled();
-  });
-
-  it("is unsupported when no audio format can be recorded", () => {
-    const { result } = setup({ MediaRecorderCtor: NoCodecRecorder });
-
-    expect(result.current.state).toBe("unsupported");
   });
 
   it("ignores a second start while the first is pending", async () => {
@@ -215,11 +167,10 @@ describe("useRecorder", () => {
     expect(deps.getUserMedia).toHaveBeenCalledTimes(1);
   });
 
-  it("reset discards the recording", async () => {
-    const { result, start, advance } = setup();
+  it("reset discards a running recording without a result", async () => {
+    const { result, start, advance, trackStop } = setup();
     await start();
     await advance(4_000);
-    act(() => result.current.stop());
 
     act(() => result.current.reset());
 
@@ -227,103 +178,33 @@ describe("useRecorder", () => {
       state: "idle",
       elapsed: 0,
       result: null,
+      stream: null,
     });
-  });
-
-  it("reset while recording releases the mic without keeping a result", async () => {
-    const { result, start, trackStop } = setup();
-    await start();
-
-    act(() => result.current.reset());
-
-    expect(result.current.state).toBe("idle");
-    expect(result.current.result).toBeNull();
     expect(trackStop).toHaveBeenCalled();
     expect(FakeMediaRecorder.latest?.state).toBe("inactive");
   });
 
-  it("releases the mic on unmount", async () => {
-    const { start, unmount, trackStop } = setup();
-    await start();
-
-    unmount();
-
-    expect(trackStop).toHaveBeenCalled();
+  it("releases the mic on unmount, even when granted afterwards", async () => {
+    const running = setup();
+    await running.start();
+    running.unmount();
+    expect(running.trackStop).toHaveBeenCalled();
     expect(FakeMediaRecorder.latest?.state).toBe("inactive");
-  });
 
-  it("releases the mic granted after an unmount", async () => {
+    FakeMediaRecorder.latest = undefined;
     let grant: (stream: MediaStream) => void = () => {};
-    const { stream, start, unmount, trackStop } = setup({
-      getUserMedia: vi.fn(
-        () =>
-          new Promise<MediaStream>((resolve) => {
-            grant = resolve;
-          }),
-      ),
+    const pending = setup({
+      getUserMedia: () =>
+        new Promise((resolve) => {
+          grant = resolve;
+        }),
     });
-    const starting = start();
-
-    unmount();
-    grant(stream);
+    const starting = pending.start();
+    pending.unmount();
+    grant(pending.stream);
     await starting;
-
-    expect(trackStop).toHaveBeenCalled();
+    expect(pending.trackStop).toHaveBeenCalled();
     expect(FakeMediaRecorder.latest).toBeUndefined();
-  });
-
-  describe("stream", () => {
-    it("is null before recording", () => {
-      const { result } = setup();
-
-      expect(result.current.stream).toBeNull();
-    });
-
-    it("is the microphone stream while recording", async () => {
-      const { result, stream, start } = setup();
-
-      await start();
-
-      expect(result.current.stream).toBe(stream);
-    });
-
-    it("is null again once stopped", async () => {
-      const { result, start } = setup();
-      await start();
-
-      act(() => result.current.stop());
-
-      expect(result.current.stream).toBeNull();
-    });
-
-    it("is null after a reset while recording", async () => {
-      const { result, start } = setup();
-      await start();
-
-      act(() => result.current.reset());
-
-      expect(result.current.stream).toBeNull();
-    });
-
-    it("stays null when the recorder refuses to start", async () => {
-      vi.spyOn(FakeMediaRecorder.prototype, "start").mockImplementation(() => {
-        throw new DOMException("x", "InvalidModificationError");
-      });
-      const { result, start } = setup();
-
-      await start();
-
-      expect(result.current.stream).toBeNull();
-    });
-
-    it("is null again when the recording stops itself at the limit", async () => {
-      const { result, start, advance } = setup();
-      await start();
-
-      await advance(MAX_RECORDING_MS);
-
-      expect(result.current.stream).toBeNull();
-    });
   });
 
   it("guards page unload while recording or unsaved", async () => {

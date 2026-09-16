@@ -9,16 +9,13 @@ import { actionItemKey, groupByOwner, useDoneItems } from "./actionItemState";
 type ActionItemsProps = {
   meetingId: string;
   items: readonly ActionItem[];
-  /** Level of the owner headings, one below the surrounding heading. */
   headingLevel?: 2 | 3;
-  className?: string;
 };
 
 export function ActionItems({
   meetingId,
   items,
   headingLevel = 3,
-  className,
 }: ActionItemsProps) {
   const done = useDoneItems(meetingId);
   const groups = groupByOwner(items);
@@ -28,7 +25,6 @@ export function ActionItems({
       <p
         className={tw(
           "flex flex-col items-center gap-2 py-10 text-center type-body text-graphite",
-          className,
         )}
       >
         <ListChecks aria-hidden="true" size={20} className={tw("text-faint")} />
@@ -38,7 +34,7 @@ export function ActionItems({
   }
 
   return (
-    <div className={tw("space-y-5", className)}>
+    <div className={tw("space-y-5")}>
       {groups.map((group) => (
         <OwnerGroup
           key={group.owner ?? ""}

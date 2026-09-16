@@ -7,7 +7,6 @@ export const PopoverTrigger = PopoverPrimitive.Trigger;
 export const PopoverAnchor = PopoverPrimitive.Anchor;
 export const PopoverClose = PopoverPrimitive.Close;
 
-/** A small floating panel (role dialog); label it with aria-label. */
 export function PopoverContent({
   className,
   align = "end",

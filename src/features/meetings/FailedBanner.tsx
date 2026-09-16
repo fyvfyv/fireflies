@@ -24,7 +24,6 @@ type FailedBannerProps = {
   retryError?: string | null;
   deleting?: boolean;
   deleteError?: string | null;
-  className?: string;
 };
 
 function copy({ status, errorStep }: BannerMeeting) {
@@ -52,7 +51,6 @@ export function FailedBanner({
   retryError = null,
   deleting = false,
   deleteError = null,
-  className,
 }: FailedBannerProps) {
   const headingId = useId();
   const { title, detail } = copy(meeting);
@@ -66,7 +64,6 @@ export function FailedBanner({
       aria-labelledby={headingId}
       className={tw(
         "flex gap-3 rounded-control border border-danger/40 bg-sheet p-4",
-        className,
       )}
     >
       <Icon

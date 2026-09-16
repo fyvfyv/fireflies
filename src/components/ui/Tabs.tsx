@@ -15,9 +15,6 @@ export function TabsList({
   const [box, setBox] = useState<IndicatorBox | null>(null);
   const [sliding, setSliding] = useState(false);
 
-  // The active tab is read from the DOM rather than from Tabs state, so the
-  // underline follows controlled and uncontrolled tabs alike, and re-measures
-  // when a tab's label, badge or font changes its width.
   useLayoutEffect(() => {
     const list = listRef.current;
     if (!list) return;
@@ -60,8 +57,6 @@ export function TabsList({
       attributeFilter: ["data-state"],
     });
     if ("fonts" in document) document.fonts.ready.then(measure);
-    // Slide only after the first placement, so the underline doesn't sweep
-    // in from the left on page load.
     const frame = requestAnimationFrame(() => setSliding(true));
 
     return () => {
@@ -100,7 +95,6 @@ export function TabsList({
 }
 
 type TabsTriggerProps = ComponentProps<typeof TabsPrimitive.Trigger> & {
-  /** Small count badge after the label (e.g. number of action items). */
   count?: number;
 };
 

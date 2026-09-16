@@ -5,12 +5,7 @@ import {
   type Summary,
 } from "../../shared/schemas.js";
 
-// What the model is asked for. Providers don't enforce length limits while
-// generating (the Anthropic provider turns them into description hints), so an
-// over-limit answer would fail validation on every attempt: the model gets
-// unbounded lists and finalizeSummary trims them instead. Every field is
-// required and nothing has a default, because the SDK converts the schema's
-// input side, where a default would make the model free to omit the field.
+// No bounds or defaults: providers ignore limits while generating, and the SDK makes defaulted fields optional.
 const llmMoment = z.number().nullable();
 
 export const llmSummarySchema = z.object({
@@ -46,10 +41,6 @@ export type LlmSummary = z.infer<typeof llmSummarySchema>;
 
 type Snap = (value: number | null) => number | null;
 
-/**
- * Maps a model-reported moment onto the start of a transcript segment, so a
- * timestamp link always lands at the beginning of a spoken line.
- */
 export function momentSnapper(segments: Segment[] | null): Snap {
   const starts = (segments ?? [])
     .map((segment) => segment.startSecond)
@@ -61,11 +52,9 @@ export function momentSnapper(segments: Segment[] | null): Snap {
   return (value) => {
     if (value === null || !Number.isFinite(value) || value < 0) return null;
     const target = Math.min(value, last);
-    // The prompt labels lines with whole seconds, so a label names the first
-    // line carrying it even when that line starts a fraction later.
+    // Prompt labels are whole seconds, so a label names the first line carrying it.
     const labelled = starts.find((start) => Math.floor(start) === target);
     if (labelled !== undefined) return Math.max(0, labelled);
-    // Otherwise the segment the moment falls into (or the silence after it).
     let snapped = first;
     for (const start of starts) {
       if (start > target) break;
@@ -75,13 +64,11 @@ export function momentSnapper(segments: Segment[] | null): Snap {
   };
 }
 
-// `>`, `-` and `+` in front of an amount read as "more than", minus and plus,
-// so they stay; dropping them would change the fact.
+// `>`, `-`, `+` before an amount mean more-than/minus/plus, so they stay.
 const LEADING_MARKERS =
   /^(?:#{1,6}|[->+](?!\s*[\d$€£])|[*•]|\d{1,2}[.)])(?:\s+|$)/;
 
-// Code spans are swapped for placeholders (private-use characters the input is
-// cleared of) so the emphasis rules can't eat their underscores and stars.
+// Code spans become private-use placeholders so emphasis rules can't eat `_` or `*`.
 const CODE_SPAN = /`([^`]*)`/g;
 const CODE_PLACEHOLDER = /\uE000(\d+)\uE001/g;
 
@@ -114,11 +101,8 @@ function clean(text: string, keepBold: boolean): string {
       return `\uE000${code.length - 1}\uE001`;
     }),
   );
-  // Rich text reserves `**` for bold, so code there goes back before the
-  // markers are paired; a literal `**` in it is treated like any other.
   if (keepBold) body = restoreCode(body);
   const parts = body.split("**");
-  // An odd number of markers leaves the last one unpaired, so it is dropped.
   if (parts.length % 2 === 0) {
     const tail = parts.pop() ?? "";
     parts.push(`${parts.pop() ?? ""}${tail}`);
@@ -134,12 +118,10 @@ function clean(text: string, keepBold: boolean): string {
   return collapse(keepBold ? joined : restoreCode(joined));
 }
 
-/** Text with no markdown at all. */
 export function plainText(text: string): string {
   return clean(text, false);
 }
 
-/** Text whose only markup is balanced `**bold**` spans. */
 export function richText(text: string): string {
   return clean(text, true);
 }
@@ -163,12 +145,6 @@ function keywordList(items: string[]): string[] {
 
 const optionalText = (text: string | null) => plainText(text ?? "") || null;
 
-/**
- * Turns the model's answer into a stored summary: markdown other than bold
- * point phrases is removed, empty entries are dropped, lists are trimmed to
- * SUMMARY_LIMITS and moments are snapped to segment starts (null without
- * segments).
- */
 export function finalizeSummary(
   raw: LlmSummary,
   segments: Segment[] | null,
@@ -188,7 +164,6 @@ export function finalizeSummary(
         .filter((point) => point.text)
         .slice(0, SUMMARY_LIMITS.pointsPerSection),
     }))
-    // Sections are named by their heading everywhere they are shown.
     .filter((section) => section.heading)
     .slice(0, SUMMARY_LIMITS.sections);
   const title = plainText(raw.title).slice(0, SUMMARY_LIMITS.titleChars);
@@ -206,9 +181,7 @@ export function finalizeSummary(
     title,
     overview,
     keywords: keywordList(raw.keywords),
-    // A done summary without notes is how one written before notes existed is
-    // recognized (and POST /notes sends those back to the model), so a model
-    // answer always keeps at least one section.
+    // A done summary without notes reads as legacy (POST /notes redoes it), so keep one section.
     notes:
       notes.length > 0
         ? notes

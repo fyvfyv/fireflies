@@ -4,27 +4,17 @@ import { formatShortTime } from "@/lib/time";
 import { usePlayerActions } from "./PlayerProvider";
 import { releasePointerFocus } from "./releasePointerFocus";
 
-/**
- * An inline 18px mark is the main way into the audio on phones. The
- * pseudo-element grows the touch target without moving any text; the
- * button needs `relative` for it.
- */
+/** A pseudo-element grows the touch target without moving text; the button needs `relative`. */
 export const HIT_AREA =
   "pointer-coarse:before:absolute pointer-coarse:before:-inset-x-1 pointer-coarse:before:-inset-y-2 pointer-coarse:before:content-['']";
 
-type TimestampMarkProps = {
-  seconds: number;
-  /** Runs on every activation, also when there is no playable audio. */
-  onJump?: (seconds: number) => void;
-  className?: string;
-};
-
-/** A highlighter stroke with the moment's time; plays the recording from it. */
 export function TimestampMark({
   seconds,
-  onJump,
   className,
-}: TimestampMarkProps) {
+}: {
+  seconds: number;
+  className?: string;
+}) {
   const { seek } = usePlayerActions();
   const [sweeps, setSweeps] = useState(0);
   const time = formatShortTime(seconds);
@@ -36,7 +26,6 @@ export function TimestampMark({
       onClick={(event) => {
         setSweeps((count) => count + 1);
         seek(seconds, { play: true });
-        onJump?.(seconds);
         releasePointerFocus(event);
       }}
       className={tw(

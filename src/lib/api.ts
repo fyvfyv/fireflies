@@ -106,12 +106,10 @@ export function processMeeting(id: string) {
   });
 }
 
-/** A signed URL for the recording; it expires, so fetch a new one when playback fails. */
 export function getAudioUrl(id: string) {
   return request(`${meetingPath(id)}/audio`, audioUrlSchema);
 }
 
-/** Rewrites a summary made before notes existed; resolves once it is done or failed. */
 export function regenerateNotes(id: string) {
   return request(`${meetingPath(id)}/notes`, meetingSchema, {
     method: "POST",

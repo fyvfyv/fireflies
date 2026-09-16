@@ -1,4 +1,3 @@
-import { HTTPException } from "hono/http-exception";
 import { describe, expect, it, vi } from "vitest";
 import { createApp } from "./app.js";
 import { HttpError } from "./http/errors.js";
@@ -13,15 +12,17 @@ function appThrowing(error: Error, log = vi.fn()) {
 }
 
 describe("createApp", () => {
+  const app = createApp(testDeps());
+
   it("answers the health check with the STT provider", async () => {
-    const res = await createApp(testDeps()).request("/api/health");
+    const res = await app.request("/api/health");
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, sttProvider: "stub:stt" });
   });
 
   it("returns the error envelope for unknown routes", async () => {
-    const res = await createApp(testDeps()).request("/api/nope");
+    const res = await app.request("/api/nope");
 
     expect(res.status).toBe(404);
     expect(await res.json()).toMatchObject({
@@ -40,10 +41,12 @@ describe("createApp", () => {
     });
   });
 
-  it("maps Hono exceptions to a non-retryable client error", async () => {
-    const res = await appThrowing(
-      new HTTPException(400, { message: "Malformed JSON in request body" }),
-    ).request("/api/boom");
+  it("answers malformed JSON with a non-retryable client error", async () => {
+    const res = await app.request("/api/meetings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{",
+    });
 
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({

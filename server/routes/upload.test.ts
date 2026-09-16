@@ -1,10 +1,13 @@
 import { handleUpload } from "@vercel/blob/client";
 import { describe, expect, it, vi } from "vitest";
+import {
+  ALLOWED_AUDIO_TYPES,
+  MAX_AUDIO_BYTES,
+} from "../../shared/constants.js";
 import { createApp } from "../app.js";
 import { postJson } from "../test/requests.js";
 import { testDeps } from "../test/testDeps.js";
 
-// Echoes the policy back as the "token" so tests can see what was approved.
 vi.mock("@vercel/blob/client", () => ({
   handleUpload: vi.fn(async ({ body, onBeforeGenerateToken }) => ({
     type: "blob.generate-client-token",
@@ -21,48 +24,40 @@ const tokenRequest = (pathname: string) => ({
 
 describe("POST /api/upload", () => {
   const app = createApp(testDeps());
+  const upload = (body: unknown) => postJson(app, "/api/upload", body);
 
-  it("issues a client token restricted to audio", async () => {
-    const res = await postJson(
-      app,
-      "/api/upload",
-      tokenRequest("recordings/a.webm"),
-    );
+  it("issues a token for the generated pathname, restricted to audio under the size cap", async () => {
+    const pathname = "recordings/0b7c5a4e-3f5d-4c1a-9e7b-2d1f0a6c8b9e.m4a";
+
+    const res = await upload({
+      type: "blob.generate-client-token",
+      payload: { pathname },
+    });
 
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { type: string; clientToken: string };
-    expect(body.type).toBe("blob.generate-client-token");
-    expect(JSON.parse(body.clientToken)).toMatchObject({
-      allowedContentTypes: expect.arrayContaining(["audio/webm"]),
+    const { clientToken } = (await res.json()) as { clientToken: string };
+    expect(JSON.parse(clientToken)).toEqual({
+      allowedContentTypes: ALLOWED_AUDIO_TYPES,
+      maximumSizeInBytes: MAX_AUDIO_BYTES,
       addRandomSuffix: false,
     });
-  });
-
-  it("passes the raw request and body to handleUpload", async () => {
-    await postJson(app, "/api/upload", tokenRequest("recordings/b.m4a"));
-
     expect(vi.mocked(handleUpload)).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        body: tokenRequest("recordings/b.m4a"),
+        body: tokenRequest(pathname),
         request: expect.any(Request),
       }),
     );
   });
 
-  it("fills in optional payload fields the client may omit", async () => {
-    const res = await postJson(app, "/api/upload", {
-      type: "blob.generate-client-token",
-      payload: { pathname: "recordings/c.webm" },
-    });
-
-    expect(res.status).toBe(200);
-    expect(vi.mocked(handleUpload)).toHaveBeenLastCalledWith(
-      expect.objectContaining({ body: tokenRequest("recordings/c.webm") }),
-    );
-  });
-
-  it("rejects pathnames outside recordings/ with the error envelope", async () => {
-    const res = await postJson(app, "/api/upload", tokenRequest("evil/a.webm"));
+  it.each([
+    "evil/a.webm",
+    "recordings/",
+    "/recordings/a.webm",
+    "recordings/nested/a.webm",
+    "recordings/../a.webm",
+    "recordings/%2e%2e/a.webm",
+  ])("refuses a token for %s", async (pathname) => {
+    const res = await upload(tokenRequest(pathname));
 
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({
@@ -78,7 +73,7 @@ describe("POST /api/upload", () => {
     ],
     ["without payload", { type: "blob.generate-client-token" }],
   ])("rejects a body %s", async (_label, body) => {
-    const res = await postJson(app, "/api/upload", body);
+    const res = await upload(body);
 
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({

@@ -18,6 +18,7 @@ type RepoFactory = {
 
 const T0 = new Date("2026-09-16T12:00:00.000Z");
 const LEASE_MS = 60_000;
+const UNKNOWN_ID = "00000000-0000-0000-0000-000000000000";
 
 const input = (overrides: Partial<NewMeeting> = {}): NewMeeting => ({
   title: "Recording",
@@ -31,7 +32,6 @@ const input = (overrides: Partial<NewMeeting> = {}): NewMeeting => ({
   ...overrides,
 });
 
-// Shaped like rows stored before notes existed, which the repo must still accept.
 const summary: StoredSummary = {
   title: "Standup",
   overview: "x".repeat(200),
@@ -50,6 +50,7 @@ function describeMeetingRepo(name: string, factory: RepoFactory) {
     const tick = (ms: number) => {
       clock = new Date(clock.getTime() + ms);
     };
+    const at = (ms: number) => new Date(T0.getTime() + ms);
 
     beforeEach(async () => {
       await factory.reset();
@@ -76,14 +77,21 @@ function describeMeetingRepo(name: string, factory: RepoFactory) {
         errorStep: null,
         processingStartedAt: null,
         createdIpHash: "ip-a",
+        createdAt: T0,
+        updatedAt: T0,
       });
-      expect(row.createdAt).toEqual(T0);
-      expect(row.updatedAt).toEqual(T0);
       expect(await repo.get(row.id)).toEqual(row);
     });
 
-    it("returns null for an unknown id", async () => {
-      expect(await repo.get("00000000-0000-0000-0000-000000000000")).toBeNull();
+    it("treats an unknown id as missing everywhere", async () => {
+      expect(await repo.get(UNKNOWN_ID)).toBeNull();
+      expect(await repo.update(UNKNOWN_ID, { title: "x" })).toBeNull();
+      expect(await repo.delete(UNKNOWN_ID)).toBe(false);
+      expect(await repo.claimLease(UNKNOWN_ID, T0, LEASE_MS)).toBeNull();
+      expect(await repo.releaseLease(UNKNOWN_ID, T0, {})).toBeNull();
+      expect(
+        await repo.reopenLegacySummary(UNKNOWN_ID, T0, LEASE_MS, {}),
+      ).toBeNull();
     });
 
     it("lists newest first with the projection only", async () => {
@@ -154,23 +162,16 @@ function describeMeetingRepo(name: string, factory: RepoFactory) {
       expect(await repo.get(row.id)).toEqual(updated);
     });
 
-    it("returns null when updating an unknown id", async () => {
-      expect(
-        await repo.update("00000000-0000-0000-0000-000000000000", {
-          title: "x",
-        }),
-      ).toBeNull();
-    });
-
     it("writes under a lease only while that lease is held", async () => {
       const row = await repo.create(input());
+      expect(await repo.update(row.id, { title: "x" }, T0)).toBeNull();
       await repo.claimLease(row.id, T0, LEASE_MS);
 
       expect(
         await repo.update(row.id, { status: "transcribing" }, T0),
       ).toMatchObject({ status: "transcribing" });
 
-      const takeover = new Date(T0.getTime() + LEASE_MS + 1);
+      const takeover = at(LEASE_MS + 1);
       await repo.claimLease(row.id, takeover, LEASE_MS);
 
       expect(await repo.update(row.id, { status: "done" }, T0)).toBeNull();
@@ -180,106 +181,56 @@ function describeMeetingRepo(name: string, factory: RepoFactory) {
       });
     });
 
-    it("refuses a leased write when no lease is held", async () => {
+    it("deletes once and hides the meeting from every read and write", async () => {
       const row = await repo.create(input());
-
-      expect(await repo.update(row.id, { title: "x" }, T0)).toBeNull();
-    });
-
-    it("deletes once", async () => {
-      const row = await repo.create(input());
+      await repo.update(row.id, { status: "done", summary });
+      const kept = await repo.create(input({ title: "Kept" }));
 
       expect(await repo.delete(row.id)).toBe(true);
       expect(await repo.delete(row.id)).toBe(false);
       expect(await repo.get(row.id)).toBeNull();
-    });
-
-    it("hides a deleted meeting from every read and write", async () => {
-      const row = await repo.create(input());
-      const kept = await repo.create(input({ title: "Kept" }));
-      await repo.delete(row.id);
-
       expect((await repo.list()).map((m) => m.id)).toEqual([kept.id]);
       expect(await repo.update(row.id, { title: "x" })).toBeNull();
       expect(await repo.claimLease(row.id, T0, LEASE_MS)).toBeNull();
       expect(await repo.releaseLease(row.id, T0, {})).toBeNull();
-    });
-
-    it("never reopens a deleted meeting", async () => {
-      const row = await repo.create(input());
-      await repo.update(row.id, { status: "done", summary });
-      await repo.delete(row.id);
-
       expect(
         await repo.reopenLegacySummary(row.id, T0, LEASE_MS, { title: "x" }),
       ).toBeNull();
     });
 
-    it("still counts a deleted meeting as created", async () => {
-      const row = await repo.create(input({ createdIpHash: "ip-a" }));
-      await repo.delete(row.id);
-
-      expect(await repo.countCreatedSince(T0)).toBe(1);
-      expect(await repo.countCreatedSince(T0, "ip-a")).toBe(1);
-    });
-
-    it("counts creations since a time, optionally per ip hash", async () => {
-      await repo.create(input({ createdIpHash: "ip-a" }));
+    it("counts creations since a time, per ip hash and including deleted ones", async () => {
+      const deleted = await repo.create(input({ createdIpHash: "ip-a" }));
+      await repo.delete(deleted.id);
       await repo.create(input({ createdIpHash: "ip-a" }));
       tick(10 * 60_000);
       await repo.create(input({ createdIpHash: "ip-b" }));
-      const fiveMinutesIn = new Date(T0.getTime() + 5 * 60_000);
+      const fiveMinutesIn = at(5 * 60_000);
 
       expect(await repo.countCreatedSince(T0)).toBe(3);
       expect(await repo.countCreatedSince(T0, "ip-a")).toBe(2);
       expect(await repo.countCreatedSince(fiveMinutesIn)).toBe(1);
       expect(await repo.countCreatedSince(fiveMinutesIn, "ip-a")).toBe(0);
-      expect(await repo.countCreatedSince(fiveMinutesIn, "ip-c")).toBe(0);
+      expect(await repo.countCreatedSince(T0, "ip-c")).toBe(0);
     });
 
     describe("claimLease", () => {
-      it("claims a meeting without a lease", async () => {
+      it("claims a free meeting, then refuses until the lease is older than leaseMs", async () => {
         const row = await repo.create(input());
-        const now = new Date(T0.getTime() + 5_000);
 
-        const claimed = await repo.claimLease(row.id, now, LEASE_MS);
-
-        expect(claimed).toMatchObject({
+        expect(await repo.claimLease(row.id, T0, LEASE_MS)).toMatchObject({
           id: row.id,
           status: "uploaded",
-          processingStartedAt: now,
-          updatedAt: now,
+          processingStartedAt: T0,
         });
-      });
-
-      it("refuses while the lease is fresh", async () => {
-        const row = await repo.create(input());
-        await repo.claimLease(row.id, T0, LEASE_MS);
-
         expect(
-          await repo.claimLease(
-            row.id,
-            new Date(T0.getTime() + 1_000),
-            LEASE_MS,
-          ),
+          await repo.claimLease(row.id, at(LEASE_MS), LEASE_MS),
         ).toBeNull();
         expect(
-          await repo.claimLease(
-            row.id,
-            new Date(T0.getTime() + LEASE_MS),
-            LEASE_MS,
-          ),
-        ).toBeNull();
-      });
-
-      it("takes over a lease older than leaseMs", async () => {
-        const row = await repo.create(input());
-        await repo.claimLease(row.id, T0, LEASE_MS);
-        const later = new Date(T0.getTime() + LEASE_MS + 1);
-
-        const claimed = await repo.claimLease(row.id, later, LEASE_MS);
-
-        expect(claimed?.processingStartedAt).toEqual(later);
+          await repo.claimLease(row.id, at(LEASE_MS + 1), LEASE_MS),
+        ).toMatchObject({
+          processingStartedAt: at(LEASE_MS + 1),
+          updatedAt: at(LEASE_MS + 1),
+        });
       });
 
       it("lets exactly one of two concurrent claims win", async () => {
@@ -299,16 +250,6 @@ function describeMeetingRepo(name: string, factory: RepoFactory) {
 
         expect(await repo.claimLease(row.id, T0, LEASE_MS)).toBeNull();
       });
-
-      it("refuses an unknown id", async () => {
-        expect(
-          await repo.claimLease(
-            "00000000-0000-0000-0000-000000000000",
-            T0,
-            LEASE_MS,
-          ),
-        ).toBeNull();
-      });
     });
 
     describe("reopenLegacySummary", () => {
@@ -319,8 +260,11 @@ function describeMeetingRepo(name: string, factory: RepoFactory) {
         return row.id;
       };
 
-      it("applies the patch to a done meeting whose summary lacks notes", async () => {
-        const id = await seedDone();
+      it.each<[string, MeetingPatch]>([
+        ["no notes key", {}],
+        ["an empty notes list", { summary: { ...summary, notes: [] } }],
+      ])("patches a done meeting whose summary has %s", async (_, patch) => {
+        const id = await seedDone(patch);
         tick(1_000);
 
         const reopened = await repo.reopenLegacySummary(
@@ -338,16 +282,6 @@ function describeMeetingRepo(name: string, factory: RepoFactory) {
           updatedAt: clock,
         });
         expect(await repo.get(id)).toEqual(reopened);
-      });
-
-      it("accepts an empty notes list", async () => {
-        const id = await seedDone({
-          summary: { ...summary, keywords: [], notes: [] },
-        });
-
-        expect(
-          await repo.reopenLegacySummary(id, T0, LEASE_MS, reopen),
-        ).toMatchObject({ status: "transcribed" });
       });
 
       it.each<[string, MeetingPatch]>([
@@ -375,15 +309,14 @@ function describeMeetingRepo(name: string, factory: RepoFactory) {
 
       it("refuses while a lease is fresh and not once it expired", async () => {
         const id = await seedDone({ processingStartedAt: T0 });
-        const expiry = new Date(T0.getTime() + LEASE_MS);
 
         expect(
-          await repo.reopenLegacySummary(id, expiry, LEASE_MS, reopen),
+          await repo.reopenLegacySummary(id, at(LEASE_MS), LEASE_MS, reopen),
         ).toBeNull();
         expect(
           await repo.reopenLegacySummary(
             id,
-            new Date(expiry.getTime() + 1),
+            at(LEASE_MS + 1),
             LEASE_MS,
             reopen,
           ),
@@ -400,17 +333,6 @@ function describeMeetingRepo(name: string, factory: RepoFactory) {
 
         expect(results.filter(Boolean)).toHaveLength(1);
       });
-
-      it("refuses an unknown id", async () => {
-        expect(
-          await repo.reopenLegacySummary(
-            "00000000-0000-0000-0000-000000000000",
-            T0,
-            LEASE_MS,
-            reopen,
-          ),
-        ).toBeNull();
-      });
     });
 
     describe("releaseLease", () => {
@@ -418,21 +340,18 @@ function describeMeetingRepo(name: string, factory: RepoFactory) {
         const row = await repo.create(input());
         await repo.claimLease(row.id, T0, LEASE_MS);
         tick(2_000);
-
-        const released = await repo.releaseLease(row.id, T0, {
+        const patch: MeetingPatch = {
           status: "failed",
           errorStep: "transcribe",
           errorMessage: "Provider unavailable",
           errorRetryable: true,
           attempts: 1,
-        });
+        };
+
+        const released = await repo.releaseLease(row.id, T0, patch);
 
         expect(released).toMatchObject({
-          status: "failed",
-          errorStep: "transcribe",
-          errorMessage: "Provider unavailable",
-          errorRetryable: true,
-          attempts: 1,
+          ...patch,
           processingStartedAt: null,
           updatedAt: clock,
         });
@@ -442,7 +361,7 @@ function describeMeetingRepo(name: string, factory: RepoFactory) {
       it("leaves a lease that was taken over alone", async () => {
         const row = await repo.create(input());
         await repo.claimLease(row.id, T0, LEASE_MS);
-        const takeover = new Date(T0.getTime() + LEASE_MS + 1);
+        const takeover = at(LEASE_MS + 1);
         await repo.claimLease(row.id, takeover, LEASE_MS);
 
         expect(
@@ -452,16 +371,6 @@ function describeMeetingRepo(name: string, factory: RepoFactory) {
           status: "uploaded",
           processingStartedAt: takeover,
         });
-      });
-
-      it("returns null for an unknown id", async () => {
-        expect(
-          await repo.releaseLease(
-            "00000000-0000-0000-0000-000000000000",
-            T0,
-            {},
-          ),
-        ).toBeNull();
       });
     });
   });

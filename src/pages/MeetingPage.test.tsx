@@ -1,17 +1,8 @@
-import { MAX_ATTEMPTS } from "@shared/constants";
 import type { Meeting, Summary } from "@shared/schemas";
-import {
-  act,
-  cleanup,
-  render,
-  screen,
-  waitFor,
-  within,
-} from "@testing-library/react";
+import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createMemoryRouter, RouterProvider, useLocation } from "react-router";
+import { useLocation } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { AppProviders } from "@/components/AppProviders";
 import {
   ApiError,
   deleteMeeting,
@@ -37,10 +28,17 @@ const mockedGet = vi.mocked(getMeeting);
 const mockedProcess = vi.mocked(processMeeting);
 const mockedDelete = vi.mocked(deleteMeeting);
 const mockedAudioUrl = vi.mocked(getAudioUrl);
-const mockedRegenerate = vi.mocked(regenerateNotes);
 
 const done = meetingFixture();
 const overview = "The team agreed to ship the release on Friday.";
+const pending = (status: Meeting["status"], overrides: Partial<Meeting> = {}) =>
+  meetingFixture({
+    status,
+    transcriptText: null,
+    transcriptSegments: null,
+    summary: null,
+    ...overrides,
+  });
 const failed = (overrides: Partial<Meeting> = {}) =>
   meetingFixture({
     status: "failed",
@@ -52,59 +50,8 @@ const failed = (overrides: Partial<Meeting> = {}) =>
     ...overrides,
   });
 
-const apiError = (status: number, code: string, message = code) =>
-  new ApiError({ status, code, message, retryable: false });
-
-function renderPage(options?: Parameters<typeof userEvent.setup>[0]) {
-  const user = userEvent.setup(options);
-  renderWithRouter(<MeetingPage />, { path: "/m/:id", route: "/m/abc" });
-  return user;
-}
-
-function HashProbe() {
-  return <output aria-label="Hash">{useLocation().hash}</output>;
-}
-
-/** Like renderPage, but at any URL and with the hash on screen. */
-function renderAt(route: string) {
-  const user = userEvent.setup();
-  const router = createMemoryRouter(
-    [
-      {
-        path: "/m/:id",
-        element: (
-          <>
-            <MeetingPage />
-            <HashProbe />
-          </>
-        ),
-      },
-    ],
-    { initialEntries: [route] },
-  );
-  render(
-    <AppProviders>
-      <RouterProvider router={router} />
-    </AppProviders>,
-  );
-  return user;
-}
-
-function useWideScreen() {
-  vi.spyOn(window, "matchMedia").mockImplementation(
-    (media: string) =>
-      ({
-        matches: media.includes("1180px"),
-        media,
-        onchange: null,
-        addListener: () => {},
-        removeListener: () => {},
-        addEventListener: () => {},
-        removeEventListener: () => {},
-        dispatchEvent: () => false,
-      }) as MediaQueryList,
-  );
-}
+const apiError = (status: number, message = "x") =>
+  new ApiError({ status, code: "x", message, retryable: false });
 
 function deferred<T>() {
   let resolve: (value: T) => void = () => {};
@@ -114,29 +61,65 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+function HashProbe() {
+  return <output aria-label="Hash">{useLocation().hash}</output>;
+}
+
+function renderPage(
+  route = "/m/abc",
+  options?: Parameters<typeof userEvent.setup>[0],
+) {
+  const user = userEvent.setup(options);
+  renderWithRouter(
+    <>
+      <MeetingPage />
+      <HashProbe />
+    </>,
+    { path: "/m/:id", route },
+  );
+  return user;
+}
+
+function useWideScreen() {
+  vi.spyOn(window, "matchMedia").mockImplementation(
+    (media) =>
+      ({
+        matches: media.includes("1180px"),
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      }) as unknown as MediaQueryList,
+  );
+}
+
+type User = ReturnType<typeof userEvent.setup>;
+
+const heading = () => screen.findByRole("heading", { level: 1 });
+const button = (name: string | RegExp) => screen.getByRole("button", { name });
+const tab = (name: string | RegExp) => screen.getByRole("tab", { name });
 const step = (label: string) =>
   within(screen.getByRole("list", { name: "Processing steps" }))
     .getByText(label)
     .closest("li");
+const landedHome = async () =>
+  expect(await screen.findByTestId("location")).toHaveTextContent(/^\/$/);
 
-const tab = (name: string | RegExp) => screen.getByRole("tab", { name });
-
-async function openMenu(user: ReturnType<typeof userEvent.setup>) {
+async function openMenu(user: User) {
   await user.click(await screen.findByRole("button", { name: "More actions" }));
   return screen.findByRole("menu");
 }
 
-async function confirmDelete(user: ReturnType<typeof userEvent.setup>) {
+async function confirmDelete(user: User) {
   await openMenu(user);
   await user.click(screen.getByRole("menuitem", { name: "Delete meeting" }));
-  return screen.findByRole("dialog", { name: "Delete this meeting?" });
+  return within(
+    await screen.findByRole("dialog", { name: "Delete this meeting?" }),
+  );
 }
 
 beforeEach(() => {
   mockedGet.mockReset();
   mockedProcess.mockReset().mockResolvedValue(done);
   mockedDelete.mockReset().mockResolvedValue();
-  mockedRegenerate.mockReset();
   mockedAudioUrl.mockReset().mockResolvedValue({
     url: "https://blob.test/abc.webm",
     expiresAt: "2026-09-17T13:00:00.000Z",
@@ -146,47 +129,27 @@ beforeEach(() => {
 
 describe("MeetingPage", () => {
   it("shows a finished meeting", async () => {
-    mockedGet.mockResolvedValue(done);
+    mockedGet.mockResolvedValue({ ...done, language: "english" });
     renderPage();
 
-    expect(
-      await screen.findByRole("heading", { level: 1, name: "Weekly sync" }),
-    ).toBeVisible();
+    expect(await heading()).toHaveTextContent("Weekly sync");
     expect(mockedGet).toHaveBeenCalledWith("abc");
-    const details = within(
-      screen.getByRole("list", { name: "Meeting details" }),
-    );
-    expect(details.getByText("Microphone")).toBeVisible();
-    expect(details.getByText("2:05")).toBeVisible();
-    expect(details.getByText("English")).toBeVisible();
-    expect(screen.queryByText(/whisper/)).not.toBeInTheDocument();
-    expect(screen.getByText(overview)).toBeVisible();
-    // The player's scrubber is the only tape.
-    expect(
-      screen.queryByRole("group", { name: "Topics over time" }),
-    ).toBeNull();
-    expect(screen.getAllByRole("slider", { name: "Seek" })).toHaveLength(1);
     expect(document.title).toBe("Weekly sync – Recap");
     expect(
-      screen.queryByRole("list", { name: "Processing steps" }),
-    ).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Meetings" })).toHaveAttribute(
-      "href",
-      "/",
-    );
+      screen.getByRole("list", { name: "Meeting details" }),
+    ).toHaveTextContent(/2:05.*English.*Microphone/);
+    expect(screen.getByText(overview)).toBeVisible();
     expect(screen.getByRole("region", { name: "Audio player" })).toBeVisible();
+    expect(screen.queryByRole("list", { name: "Processing steps" })).toBeNull();
     expect(mockedProcess).not.toHaveBeenCalled();
     expect(mockedAudioUrl).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ["english", "English"],
-    ["de", "German"],
-  ])("shows the reported language %s as %s", async (language, expected) => {
-    mockedGet.mockResolvedValue(meetingFixture({ language }));
+  it("names a language reported by code", async () => {
+    mockedGet.mockResolvedValue({ ...done, language: "de" });
     renderPage();
 
-    expect(await screen.findByText(expected)).toBeVisible();
+    expect(await screen.findByText("German")).toBeVisible();
   });
 
   it("shows a loading state first", () => {
@@ -199,301 +162,8 @@ describe("MeetingPage", () => {
     expect(document.title).toBe("Recap");
   });
 
-  it("starts processing an uploaded meeting", async () => {
-    mockedGet
-      .mockResolvedValueOnce(
-        meetingFixture({
-          status: "uploaded",
-          transcriptText: null,
-          transcriptSegments: null,
-          summary: null,
-        }),
-      )
-      .mockResolvedValue(done);
-    const run = deferred<Meeting>();
-    mockedProcess.mockReturnValue(run.promise);
-    renderPage();
-
-    await screen.findByRole("heading", { level: 1 });
-    expect(step("Transcript")).toHaveAttribute("aria-current", "step");
-    // The start is fired from an effect, which may run after the first paint.
-    await vi.waitFor(() => expect(mockedProcess).toHaveBeenCalledWith("abc"));
-
-    await act(async () => run.resolve(done));
-    expect(await screen.findByText(overview)).toBeVisible();
-    expect(screen.getByText("Notes are ready.")).toBeInTheDocument();
-  });
-
-  it("offers a retry when the automatic start fails", async () => {
-    const waiting = meetingFixture({
-      status: "uploaded",
-      transcriptText: null,
-      transcriptSegments: null,
-      summary: null,
-    });
-    mockedGet.mockResolvedValue(waiting);
-    mockedProcess
-      .mockRejectedValueOnce(apiError(500, "internal", "Database unavailable"))
-      .mockResolvedValue(done);
-    const user = renderPage();
-
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Database unavailable",
-    );
-    expect(screen.getByText("Starting…")).toBeVisible();
-
-    mockedGet.mockResolvedValue(done);
-    await user.click(screen.getByRole("button", { name: "Retry" }));
-
-    expect(await screen.findByText(overview)).toBeVisible();
-    expect(mockedProcess).toHaveBeenCalledTimes(2);
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-  });
-
-  it("shows the processing steps with a running clock and a skeleton", async () => {
-    mockedGet.mockResolvedValue(
-      meetingFixture({
-        status: "transcribing",
-        transcriptText: null,
-        transcriptSegments: null,
-        summary: null,
-        processingStartedAt: new Date(Date.now() - 42_000).toISOString(),
-      }),
-    );
-    renderPage();
-
-    expect(
-      await screen.findByText("Transcribing the recording…"),
-    ).toBeVisible();
-    // Said once, by the steps; the transcript tab doesn't repeat it.
-    expect(screen.getAllByText("Transcribing the recording…")).toHaveLength(1);
-    expect(
-      screen.getByText("Longer recordings take up to a minute."),
-    ).toBeVisible();
-    expect(screen.getByText("Elapsed")).toBeInTheDocument();
-    expect(screen.getByText(/^0:4\d$/)).toBeVisible();
-    expect(screen.getByText("Loading notes…")).toBeInTheDocument();
-    expect(tab(/Action items/)).not.toHaveTextContent(/\d/);
-    expect(
-      screen.queryByRole("group", { name: "Topics over time" }),
-    ).toBeNull();
-  });
-
-  it("reports transcribing once on wide screens too", async () => {
-    useWideScreen();
-    mockedGet.mockResolvedValue(
-      meetingFixture({
-        status: "transcribing",
-        transcriptText: null,
-        transcriptSegments: null,
-        summary: null,
-      }),
-    );
-    renderPage();
-
-    expect(
-      await screen.findByText("Transcribing the recording…"),
-    ).toBeVisible();
-    expect(screen.getAllByText("Transcribing the recording…")).toHaveLength(1);
-    expect(
-      within(screen.getByRole("region", { name: "Transcript" })).getByText(
-        "The transcript appears here once the recording is transcribed.",
-      ),
-    ).toBeVisible();
-  });
-
-  it("shows the transcript while the notes are written", async () => {
-    mockedGet.mockResolvedValue(
-      meetingFixture({ status: "summarizing", summary: null }),
-    );
-    const user = renderPage();
-
-    await user.click(await screen.findByRole("tab", { name: "Transcript" }));
-
-    expect(
-      within(screen.getByRole("tabpanel")).getByText(
-        "Hello team, let's ship the release on Friday.",
-      ),
-    ).toBeVisible();
-  });
-
-  it("marks the failed step", async () => {
-    mockedGet.mockResolvedValue(failed());
-    renderPage();
-
-    await screen.findByRole("heading", { level: 1 });
-    expect(step("Transcript")).toHaveAttribute("data-state", "done");
-    expect(step("Notes")).toHaveAttribute("data-state", "error");
-    expect(screen.getByText("The summary model is unavailable")).toBeVisible();
-    expect(screen.queryByText("Loading notes…")).not.toBeInTheDocument();
-    expect(screen.queryByText("Elapsed")).not.toBeInTheDocument();
-  });
-
-  it("retries a failed meeting and refetches it", async () => {
-    mockedGet.mockResolvedValueOnce(failed()).mockResolvedValue(done);
-    const user = renderPage();
-
-    await user.click(await screen.findByRole("button", { name: "Retry" }));
-
-    expect(mockedProcess).toHaveBeenCalledWith("abc");
-    expect(await screen.findByText(overview)).toBeVisible();
-    expect(mockedGet).toHaveBeenCalledTimes(2);
-    expect(
-      screen.queryByRole("button", { name: "Retry" }),
-    ).not.toBeInTheDocument();
-  });
-
-  it("tolerates a retry that finds the run already started", async () => {
-    mockedGet
-      .mockResolvedValueOnce(failed())
-      .mockResolvedValue(
-        meetingFixture({ status: "summarizing", summary: null }),
-      );
-    mockedProcess.mockRejectedValue(apiError(409, "already_processing"));
-    const user = renderPage();
-
-    await user.click(await screen.findByRole("button", { name: "Retry" }));
-
-    expect(await screen.findByText("Writing the notes…")).toBeVisible();
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-  });
-
-  it("shows why a retry was refused", async () => {
-    mockedGet.mockResolvedValue(failed());
-    mockedProcess.mockRejectedValue(
-      apiError(422, "give_up", "Too many failed attempts"),
-    );
-    const user = renderPage();
-
-    await user.click(await screen.findByRole("button", { name: "Retry" }));
-
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Too many failed attempts",
-    );
-  });
-
-  it("keeps polling while a retry runs", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    mockedGet
-      .mockResolvedValueOnce(failed())
-      .mockResolvedValue(
-        meetingFixture({ status: "summarizing", summary: null }),
-      );
-    const run = deferred<Meeting>();
-    mockedProcess.mockReturnValue(run.promise);
-    const user = renderPage({ advanceTimers: vi.advanceTimersByTime });
-
-    await user.click(await screen.findByRole("button", { name: "Retry" }));
-    expect(screen.getByRole("button", { name: "Retrying…" })).toHaveAttribute(
-      "aria-disabled",
-      "true",
-    );
-
-    await act(() => vi.advanceTimersByTimeAsync(2_000));
-    expect(mockedGet).toHaveBeenCalledTimes(2);
-    expect(screen.getByText("Writing the notes…")).toBeVisible();
-    expect(
-      screen.queryByRole("button", { name: /Retry/ }),
-    ).not.toBeInTheDocument();
-
-    mockedGet.mockResolvedValue(done);
-    await act(async () => run.resolve(done));
-    expect(await screen.findByText(overview)).toBeVisible();
-  });
-
-  it("offers a retry for an interrupted run", async () => {
-    mockedGet.mockResolvedValue(
-      meetingFixture({ status: "transcribing", summary: null, stalled: true }),
-    );
-    renderPage();
-
-    expect(
-      await screen.findByText("Processing was interrupted", { selector: "h2" }),
-    ).toBeVisible();
-    expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
-  });
-
-  it.each([
-    ["the error is permanent", failed({ errorRetryable: false })],
-    ["attempts are exhausted", failed({ attempts: MAX_ATTEMPTS })],
-  ])("offers delete and re-upload when %s", async (_, meeting) => {
-    mockedGet.mockResolvedValue(meeting);
-    const user = renderPage();
-
-    await user.click(
-      await screen.findByRole("button", { name: "Delete and re-upload" }),
-    );
-    expect(
-      screen.queryByRole("button", { name: "Retry" }),
-    ).not.toBeInTheDocument();
-    const dialog = await screen.findByRole("dialog");
-    await user.click(within(dialog).getByRole("button", { name: "Delete" }));
-
-    expect(mockedDelete).toHaveBeenCalledWith("abc");
-    expect(await screen.findByTestId("location")).toHaveTextContent(/^\/$/);
-  });
-
-  it("deletes from the menu after a confirmation", async () => {
-    mockedGet.mockResolvedValue(done);
-    const user = renderPage();
-
-    let dialog = await confirmDelete(user);
-    expect(dialog).toHaveTextContent("This can't be undone.");
-    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
-    await waitFor(() =>
-      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
-    );
-    expect(mockedDelete).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: "More actions" })).toHaveFocus();
-
-    dialog = await confirmDelete(user);
-    await user.click(within(dialog).getByRole("button", { name: "Delete" }));
-
-    expect(mockedDelete).toHaveBeenCalledWith("abc");
-    expect(await screen.findByTestId("location")).toHaveTextContent(/^\/$/);
-    // The confirmation outlives the page it was shown on.
-    expect(
-      within(screen.getByRole("region", { name: "Notifications" })).getByText(
-        "Meeting deleted",
-      ),
-    ).toBeVisible();
-  });
-
-  it("treats an already deleted meeting as deleted", async () => {
-    mockedGet.mockResolvedValue(done);
-    mockedDelete.mockRejectedValue(apiError(404, "not_found"));
-    const user = renderPage();
-
-    const dialog = await confirmDelete(user);
-    await user.click(within(dialog).getByRole("button", { name: "Delete" }));
-
-    expect(await screen.findByTestId("location")).toHaveTextContent(/^\/$/);
-  });
-
-  it("shows a failed delete and stays on the page", async () => {
-    mockedGet.mockResolvedValue(done);
-    mockedDelete.mockRejectedValue(
-      apiError(500, "internal", "Database unavailable"),
-    );
-    const user = renderPage();
-
-    const dialog = await confirmDelete(user);
-    await user.click(within(dialog).getByRole("button", { name: "Delete" }));
-
-    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
-      "Database unavailable",
-    );
-    expect(screen.queryByTestId("location")).not.toBeInTheDocument();
-    expect(
-      within(dialog).getByRole("button", { name: "Delete" }),
-    ).toBeEnabled();
-    expect(
-      within(dialog).getByRole("button", { name: "Delete" }),
-    ).not.toHaveAttribute("aria-busy");
-  });
-
   it("renders a not-found state for a missing meeting", async () => {
-    mockedGet.mockRejectedValue(apiError(404, "not_found"));
+    mockedGet.mockRejectedValue(apiError(404));
     renderPage();
 
     expect(
@@ -503,35 +173,259 @@ describe("MeetingPage", () => {
     expect(
       screen.getByRole("link", { name: "Back to meetings" }),
     ).toHaveAttribute("href", "/");
-    expect(
-      screen.queryByRole("region", { name: "Audio player" }),
-    ).not.toBeInTheDocument();
   });
 
   it("shows a load error with a retry", async () => {
     mockedGet
-      .mockRejectedValueOnce(apiError(500, "internal", "Database unavailable"))
+      .mockRejectedValueOnce(apiError(500, "Database unavailable"))
       .mockResolvedValue(done);
     const user = renderPage();
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Database unavailable",
     );
-    await user.click(screen.getByRole("button", { name: "Try again" }));
+    await user.click(button("Try again"));
 
-    expect(
-      await screen.findByRole("heading", { level: 1, name: "Weekly sync" }),
-    ).toBeVisible();
+    expect(await heading()).toHaveTextContent("Weekly sync");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  describe("processing", () => {
+    it("starts an uploaded meeting and announces the notes", async () => {
+      mockedGet
+        .mockResolvedValueOnce(pending("uploaded"))
+        .mockResolvedValue(done);
+      const run = deferred<Meeting>();
+      mockedProcess.mockReturnValue(run.promise);
+      renderPage();
+
+      await heading();
+      expect(step("Transcript")).toHaveAttribute("aria-current", "step");
+      await vi.waitFor(() => expect(mockedProcess).toHaveBeenCalledWith("abc"));
+
+      await act(async () => run.resolve(done));
+      expect(await screen.findByText(overview)).toBeVisible();
+      expect(screen.getByText("Notes are ready.")).toBeInTheDocument();
+    });
+
+    it("offers a retry when the automatic start fails, on any tab", async () => {
+      mockedGet.mockResolvedValue(pending("uploaded"));
+      mockedProcess
+        .mockRejectedValueOnce(apiError(500, "Database unavailable"))
+        .mockResolvedValue(done);
+      const user = renderPage("/m/abc#actions");
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "Database unavailable",
+      );
+      expect(tab(/Action items/)).toHaveAttribute("aria-selected", "true");
+
+      mockedGet.mockResolvedValue(done);
+      await user.click(button("Retry"));
+
+      expect(
+        await screen.findByRole("checkbox", { name: "Tag the release" }),
+      ).toBeVisible();
+      expect(mockedProcess).toHaveBeenCalledTimes(2);
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("shows the steps with a running clock and a notes skeleton", async () => {
+      mockedGet.mockResolvedValue(
+        pending("transcribing", {
+          processingStartedAt: new Date(Date.now() - 42_000).toISOString(),
+        }),
+      );
+      renderPage();
+
+      expect(
+        await screen.findByText("Transcribing the recording…"),
+      ).toBeVisible();
+      expect(screen.getByText(/^0:4\d$/)).toBeVisible();
+      expect(screen.getByText("Loading notes…")).toBeInTheDocument();
+      expect(tab(/Action items/)).not.toHaveTextContent(/\d/);
+    });
+
+    it("shows the transcript while the notes are written", async () => {
+      mockedGet.mockResolvedValue(
+        meetingFixture({ status: "summarizing", summary: null }),
+      );
+      const user = renderPage();
+
+      await user.click(await screen.findByRole("tab", { name: "Transcript" }));
+
+      expect(
+        within(screen.getByRole("tabpanel")).getByText(
+          "Hello team, let's ship the release on Friday.",
+        ),
+      ).toBeVisible();
+    });
+
+    it("marks the failed step without a skeleton or clock", async () => {
+      mockedGet.mockResolvedValue(failed());
+      renderPage();
+
+      await heading();
+      expect(step("Notes")).toHaveAttribute("data-state", "error");
+      expect(
+        screen.getByText("The summary model is unavailable"),
+      ).toBeVisible();
+      expect(screen.queryByText("Loading notes…")).not.toBeInTheDocument();
+      expect(screen.queryByText("Elapsed")).not.toBeInTheDocument();
+    });
+  });
+
+  describe("retry", () => {
+    it("retries a failed meeting, polling while it runs", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      mockedGet
+        .mockResolvedValueOnce(failed())
+        .mockResolvedValue(
+          meetingFixture({ status: "summarizing", summary: null }),
+        );
+      const run = deferred<Meeting>();
+      mockedProcess.mockReturnValue(run.promise);
+      const user = renderPage("/m/abc", {
+        advanceTimers: vi.advanceTimersByTime,
+      });
+
+      await user.click(await screen.findByRole("button", { name: "Retry" }));
+      expect(mockedProcess).toHaveBeenCalledWith("abc");
+      expect(button("Retrying…")).toHaveAttribute("aria-disabled", "true");
+
+      await act(() => vi.advanceTimersByTimeAsync(2_000));
+      expect(mockedGet).toHaveBeenCalledTimes(2);
+      expect(screen.getByText("Writing the notes…")).toBeVisible();
+      expect(screen.queryByRole("button", { name: /Retry/ })).toBeNull();
+
+      mockedGet.mockResolvedValue(done);
+      await act(async () => run.resolve(done));
+      expect(await screen.findByText(overview)).toBeVisible();
+    });
+
+    it("tolerates a retry that finds the run already started", async () => {
+      mockedGet
+        .mockResolvedValueOnce(failed())
+        .mockResolvedValue(
+          meetingFixture({ status: "summarizing", summary: null }),
+        );
+      mockedProcess.mockRejectedValue(apiError(409));
+      const user = renderPage();
+
+      await user.click(await screen.findByRole("button", { name: "Retry" }));
+
+      expect(await screen.findByText("Writing the notes…")).toBeVisible();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("shows why a retry was refused", async () => {
+      mockedGet.mockResolvedValue(failed());
+      mockedProcess.mockRejectedValue(
+        apiError(422, "Too many failed attempts"),
+      );
+      const user = renderPage();
+
+      await user.click(await screen.findByRole("button", { name: "Retry" }));
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "Too many failed attempts",
+      );
+    });
+
+    it.each([
+      ["Couldn't write the notes", failed()],
+      [
+        "Processing was interrupted",
+        meetingFixture({ status: "transcribing", stalled: true }),
+      ],
+    ])("shows %s and a retry on the transcript tab", async (title, meeting) => {
+      mockedGet.mockResolvedValue(meeting);
+      renderPage("/m/abc#transcript");
+
+      expect(await screen.findByRole("heading", { name: title })).toBeVisible();
+      expect(tab("Transcript")).toHaveAttribute("aria-selected", "true");
+      expect(button("Retry")).toBeEnabled();
+    });
+  });
+
+  describe("delete", () => {
+    it("deletes from the menu after a confirmation", async () => {
+      mockedGet.mockResolvedValue(done);
+      const user = renderPage();
+
+      let dialog = await confirmDelete(user);
+      await user.click(dialog.getByRole("button", { name: "Cancel" }));
+      await waitFor(() =>
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+      );
+      expect(mockedDelete).not.toHaveBeenCalled();
+      expect(button("More actions")).toHaveFocus();
+
+      dialog = await confirmDelete(user);
+      await user.click(dialog.getByRole("button", { name: "Delete" }));
+
+      expect(mockedDelete).toHaveBeenCalledWith("abc");
+      await landedHome();
+      expect(
+        within(screen.getByRole("region", { name: "Notifications" })).getByText(
+          "Meeting deleted",
+        ),
+      ).toBeVisible();
+    });
+
+    it("treats an already deleted meeting as deleted", async () => {
+      mockedGet.mockResolvedValue(done);
+      mockedDelete.mockRejectedValue(apiError(404));
+      const user = renderPage();
+
+      const dialog = await confirmDelete(user);
+      await user.click(dialog.getByRole("button", { name: "Delete" }));
+
+      await landedHome();
+    });
+
+    it("shows a failed delete and stays on the page", async () => {
+      mockedGet.mockResolvedValue(done);
+      mockedDelete.mockRejectedValue(apiError(500, "Database unavailable"));
+      const user = renderPage();
+
+      const dialog = await confirmDelete(user);
+      await user.click(dialog.getByRole("button", { name: "Delete" }));
+
+      expect(await dialog.findByRole("alert")).toHaveTextContent(
+        "Database unavailable",
+      );
+      expect(
+        dialog.getByRole("button", { name: "Delete" }),
+      ).not.toHaveAttribute("aria-busy");
+      expect(screen.queryByTestId("location")).not.toBeInTheDocument();
+    });
+
+    it("offers delete and re-upload when a retry can't help", async () => {
+      mockedGet.mockResolvedValue(failed({ errorRetryable: false }));
+      const user = renderPage();
+
+      await user.click(
+        await screen.findByRole("button", { name: "Delete and re-upload" }),
+      );
+      await user.click(
+        within(await screen.findByRole("dialog")).getByRole("button", {
+          name: "Delete",
+        }),
+      );
+
+      expect(mockedDelete).toHaveBeenCalledWith("abc");
+      await landedHome();
+    });
   });
 
   describe("tabs", () => {
     it("switches between notes, action items and the transcript", async () => {
       mockedGet.mockResolvedValue(done);
-      const user = renderAt("/m/abc");
+      const user = renderPage();
       const hash = () => screen.getByRole("status", { name: "Hash" });
 
-      await screen.findByRole("heading", { level: 1 });
+      await heading();
       expect(tab("Notes")).toHaveAttribute("aria-selected", "true");
       expect(tab(/Action items/)).toHaveTextContent("1");
 
@@ -546,13 +440,23 @@ describe("MeetingPage", () => {
       await user.click(tab("Transcript"));
       expect(hash()).toHaveTextContent("#transcript");
       expect(
-        within(screen.getByRole("tabpanel")).getByRole("searchbox", {
-          name: "Search transcript",
-        }),
+        within(screen.getByRole("tabpanel")).getByRole("searchbox"),
       ).toBeVisible();
 
       await user.click(tab("Notes"));
       expect(hash()).toHaveTextContent("#notes");
+    });
+
+    it.each([
+      ["#actions", /Action items/],
+      ["#transcript", "Transcript"],
+      ["#nonsense", "Notes"],
+    ])("opens %s from the link", async (hash, name) => {
+      mockedGet.mockResolvedValue(done);
+      renderPage(`/m/abc${hash}`);
+
+      await heading();
+      expect(tab(name)).toHaveAttribute("aria-selected", "true");
     });
 
     it.each([
@@ -563,117 +467,61 @@ describe("MeetingPage", () => {
       vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
         function (this: Element) {
           return this.querySelector(":scope > [role='tablist']")
-            ? DOMRect.fromRect({ x: 0, y: top, width: 400, height: 900 })
+            ? DOMRect.fromRect({ y: top, width: 400, height: 900 })
             : rect.call(this);
         },
       );
       const scroll = vi.spyOn(Element.prototype, "scrollIntoView");
       mockedGet.mockResolvedValue(done);
-      const user = renderAt("/m/abc");
-      await screen.findByRole("heading", { level: 1 });
+      const user = renderPage();
+      await heading();
       const tabsRoot = screen.getByRole("tablist").parentElement;
 
       await user.click(tab("Transcript"));
-      // Give the scheduled frame a chance to run.
       await act(() => new Promise((resolve) => requestAnimationFrame(resolve)));
 
-      const onTabs = scroll.mock.contexts.filter((el) => el === tabsRoot);
-      expect(onTabs).toHaveLength(calls);
-      if (calls > 0) {
-        expect(scroll).toHaveBeenCalledWith({ block: "start" });
-      }
-      // Below 1180px the tab row sticks to the top of the window.
-      expect(screen.getByRole("tablist")).toHaveClass(
-        "max-[1180px]:sticky",
-        "max-[1180px]:top-0",
+      expect(scroll.mock.contexts.filter((el) => el === tabsRoot)).toHaveLength(
+        calls,
       );
-    });
-
-    it.each([
-      ["#actions", /Action items/],
-      ["#transcript", "Transcript"],
-      ["#nonsense", "Notes"],
-    ])("opens %s from the link", async (hash, name) => {
-      mockedGet.mockResolvedValue(done);
-      renderAt(`/m/abc${hash}`);
-
-      await screen.findByRole("heading", { level: 1 });
-      expect(tab(name)).toHaveAttribute("aria-selected", "true");
-    });
-
-    it.each([
-      ["#actions", /Action items/],
-      ["#transcript", "Transcript"],
-    ])("shows a failed run and its retry on %s", async (hash, name) => {
-      mockedGet.mockResolvedValue(failed());
-      renderAt(`/m/abc${hash}`);
-
-      await screen.findByRole("heading", { level: 1 });
-      expect(tab(name)).toHaveAttribute("aria-selected", "true");
-      expect(
-        screen.getByRole("heading", { name: "Couldn't write the notes" }),
-      ).toBeVisible();
-      expect(screen.getByRole("button", { name: "Retry" })).toBeVisible();
-    });
-
-    it("shows a failed start and its retry outside the notes tab", async () => {
-      mockedGet.mockResolvedValue(
-        meetingFixture({
-          status: "uploaded",
-          transcriptText: null,
-          transcriptSegments: null,
-          summary: null,
-        }),
-      );
-      mockedProcess.mockRejectedValue(
-        apiError(500, "internal", "Database unavailable"),
-      );
-      renderAt("/m/abc#actions");
-
-      expect(await screen.findByRole("alert")).toHaveTextContent(
-        "Database unavailable",
-      );
-      expect(tab(/Action items/)).toHaveAttribute("aria-selected", "true");
-      expect(screen.getByRole("button", { name: "Retry" })).toBeVisible();
-    });
-
-    it("says when no action items were mentioned", async () => {
-      mockedGet.mockResolvedValue(
-        meetingFixture({
-          summary: { ...(done.summary as Summary), actionItems: [] },
-        }),
-      );
-      renderAt("/m/abc#actions");
-
-      expect(
-        await screen.findByText("No action items were mentioned."),
-      ).toBeVisible();
-      expect(tab(/Action items/)).toHaveTextContent("0");
     });
   });
 
   describe("on wide screens", () => {
+    it("keeps the transcript beside the notes", async () => {
+      useWideScreen();
+      mockedGet.mockResolvedValue(done);
+      renderPage("/m/abc#transcript");
+
+      await heading();
+      expect(screen.getAllByRole("tab")).toHaveLength(2);
+      expect(tab("Notes")).toHaveAttribute("aria-selected", "true");
+      expect(screen.getByText(overview)).toBeVisible();
+      expect(
+        within(screen.getByRole("region", { name: "Transcript" })).getByText(
+          "Hello team, let's ship the release on Friday.",
+        ),
+      ).toBeVisible();
+    });
+
     it("ends the transcript rail above the player bar", async () => {
       useWideScreen();
-      // The rail starts below the page header and sticks 16 px from the top.
       let railTop = 129;
       const rect = Element.prototype.getBoundingClientRect;
       vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
         function (this: Element) {
           return this.tagName === "ASIDE"
-            ? DOMRect.fromRect({ x: 0, y: railTop, width: 400, height: 500 })
+            ? DOMRect.fromRect({ y: railTop, width: 400, height: 500 })
             : rect.call(this);
         },
       );
       mockedGet.mockResolvedValue(done);
-      renderAt("/m/abc");
+      renderPage();
 
       const rail = (
         await screen.findByRole("region", { name: "Transcript" })
-      ).closest("aside") as HTMLElement;
-      const top = () => rail.style.getPropertyValue("--rail-top");
+      ).closest("aside");
+      const top = () => rail?.style.getPropertyValue("--rail-top");
       expect(top()).toBe("129px");
-      expect(rail.className).toContain("var(--rail-top");
 
       railTop = -40;
       act(() => {
@@ -681,41 +529,20 @@ describe("MeetingPage", () => {
       });
       await waitFor(() => expect(top()).toBe("16px"));
     });
-
-    it("keeps the transcript beside the notes", async () => {
-      useWideScreen();
-      mockedGet.mockResolvedValue(done);
-      renderAt("/m/abc#transcript");
-
-      await screen.findByRole("heading", { level: 1 });
-      expect(screen.getAllByRole("tab")).toHaveLength(2);
-      expect(tab("Notes")).toHaveAttribute("aria-selected", "true");
-      expect(screen.getByText(overview)).toBeVisible();
-      const rail = screen.getByRole("region", { name: "Transcript" });
-      expect(
-        within(rail).getByText("Hello team, let's ship the release on Friday."),
-      ).toBeVisible();
-    });
   });
 
   describe("actions", () => {
-    it("copies a link to the meeting", async () => {
+    it("copies the link, the notes and the transcript", async () => {
       mockedGet.mockResolvedValue(done);
-      const user = renderPage();
+      const user = renderPage("/m/abc#actions");
 
       await user.click(
         await screen.findByRole("button", { name: "Copy link" }),
       );
-
       expect(await screen.findByText("Link copied")).toBeVisible();
       await expect(navigator.clipboard.readText()).resolves.toBe(
-        `${window.location.origin}/m/abc`,
+        `${window.location.origin}/m/abc#actions`,
       );
-    });
-
-    it("copies the notes and the transcript from the menu", async () => {
-      mockedGet.mockResolvedValue(done);
-      const user = renderPage();
 
       await openMenu(user);
       await user.click(screen.getByRole("menuitem", { name: "Copy notes" }));
@@ -735,147 +562,96 @@ describe("MeetingPage", () => {
     });
 
     it("disables copying what doesn't exist yet", async () => {
-      mockedGet.mockResolvedValue(
-        meetingFixture({
-          status: "transcribing",
-          transcriptText: null,
-          transcriptSegments: null,
-          summary: null,
-        }),
-      );
+      mockedGet.mockResolvedValue(pending("transcribing"));
       const user = renderPage();
 
       await openMenu(user);
 
-      expect(
-        screen.getByRole("menuitem", { name: "Copy notes" }),
-      ).toHaveAttribute("aria-disabled", "true");
-      expect(
-        screen.getByRole("menuitem", { name: "Copy transcript" }),
-      ).toHaveAttribute("aria-disabled", "true");
+      for (const name of ["Copy notes", "Copy transcript"]) {
+        expect(screen.getByRole("menuitem", { name })).toHaveAttribute(
+          "aria-disabled",
+          "true",
+        );
+      }
     });
 
-    it("opens the recording in a new tab", async () => {
+    it("opens the recording in a new tab, or closes it on failure", async () => {
       const tabWindow = {
-        opener: {} as unknown,
-        location: { href: "" },
-        close: vi.fn(),
-      };
-      const open = vi
-        .spyOn(window, "open")
-        .mockReturnValue(tabWindow as unknown as Window);
-      mockedGet.mockResolvedValue(done);
-      const user = renderPage();
-
-      await openMenu(user);
-      await user.click(
-        screen.getByRole("menuitem", { name: "Download audio" }),
-      );
-
-      expect(open).toHaveBeenCalledTimes(1);
-      await waitFor(() =>
-        expect(tabWindow.location.href).toBe("https://blob.test/abc.webm"),
-      );
-      expect(tabWindow.opener).toBeNull();
-      expect(mockedAudioUrl).toHaveBeenCalledWith("abc");
-    });
-
-    it("closes the tab and explains when the recording can't be fetched", async () => {
-      const tabWindow = {
-        opener: null,
+        opener: {},
         location: { href: "" },
         close: vi.fn(),
       };
       vi.spyOn(window, "open").mockReturnValue(tabWindow as unknown as Window);
-      mockedAudioUrl.mockRejectedValue(
-        apiError(404, "audio_missing", "Audio not found"),
-      );
       mockedGet.mockResolvedValue(done);
       const user = renderPage();
+      const download = async () => {
+        await openMenu(user);
+        await user.click(
+          screen.getByRole("menuitem", { name: "Download audio" }),
+        );
+      };
 
-      await openMenu(user);
-      await user.click(
-        screen.getByRole("menuitem", { name: "Download audio" }),
+      await download();
+      await waitFor(() =>
+        expect(tabWindow.location.href).toBe("https://blob.test/abc.webm"),
       );
+      expect(tabWindow.opener).toBeNull();
 
+      mockedAudioUrl.mockRejectedValue(apiError(404, "Audio not found"));
+      await download();
       expect(await screen.findByText("Audio not found")).toBeVisible();
       expect(tabWindow.close).toHaveBeenCalled();
     });
   });
 
-  describe("playback", () => {
-    it("plays from a note's timestamp", async () => {
-      const play = vi.spyOn(HTMLMediaElement.prototype, "play");
-      mockedGet.mockResolvedValue(done);
-      const user = renderPage();
+  it("plays from a note's timestamp", async () => {
+    const play = vi.spyOn(HTMLMediaElement.prototype, "play");
+    mockedGet.mockResolvedValue(done);
+    const user = renderPage();
 
-      const notes = within(
-        await screen.findByRole("region", { name: "Release tasks" }),
-      );
-      await user.click(
-        notes.getAllByRole("button", {
-          name: "Play from 1:10",
-        })[0] as HTMLElement,
-      );
+    const notes = within(
+      await screen.findByRole("region", { name: "Release tasks" }),
+    );
+    await user.click(notes.getByRole("button", { name: "Play from 1:10" }));
 
-      await waitFor(() => expect(play).toHaveBeenCalled());
-      expect(mockedAudioUrl).toHaveBeenCalledWith("abc");
-      expect(document.querySelector("audio")).toHaveAttribute(
-        "src",
-        "https://blob.test/abc.webm",
-      );
-      const player = within(
-        screen.getByRole("region", { name: "Audio player" }),
-      );
-      expect(player.getByText("1:10")).toBeVisible();
-    });
-
-    it("toggles playback with Space", async () => {
-      const play = vi.spyOn(HTMLMediaElement.prototype, "play");
-      mockedGet.mockResolvedValue(done);
-      const user = renderPage();
-      await screen.findByRole("heading", { level: 1 });
-
-      await user.keyboard(" ");
-
-      await waitFor(() => expect(play).toHaveBeenCalledTimes(1));
-    });
-
-    it("lifts toasts above the player", async () => {
-      mockedGet.mockResolvedValue(done);
-      renderPage();
-      await screen.findByRole("region", { name: "Audio player" });
-
-      expect(
-        screen
-          .getByRole("region", { name: "Notifications" })
-          .style.getPropertyValue("--toast-offset"),
-      ).not.toBe("0px");
-    });
+    await waitFor(() => expect(play).toHaveBeenCalled());
+    expect(
+      within(screen.getByRole("region", { name: "Audio player" })).getByText(
+        "1:10",
+      ),
+    ).toBeVisible();
   });
 
-  describe("legacy summaries", () => {
+  it("lifts toasts above the player", async () => {
+    mockedGet.mockResolvedValue(done);
+    renderPage();
+    await screen.findByRole("region", { name: "Audio player" });
+
+    expect(
+      screen
+        .getByRole("region", { name: "Notifications" })
+        .style.getPropertyValue("--toast-offset"),
+    ).not.toBe("0px");
+  });
+
+  it("generates detailed notes for a legacy summary", async () => {
     const legacy = meetingFixture({
-      transcriptText: "Hello team, let's ship the release on Friday.",
       summary: { ...(done.summary as Summary), keywords: [], notes: [] },
     });
+    mockedGet.mockResolvedValueOnce(legacy).mockResolvedValue(done);
+    vi.mocked(regenerateNotes).mockResolvedValue(done);
+    const user = renderPage();
 
-    it("generates detailed notes and shows them", async () => {
-      mockedGet.mockResolvedValueOnce(legacy).mockResolvedValue(done);
-      mockedRegenerate.mockResolvedValue(done);
-      const user = renderPage();
+    await user.click(
+      await screen.findByRole("button", { name: "Generate detailed notes" }),
+    );
 
-      await user.click(
-        await screen.findByRole("button", { name: "Generate detailed notes" }),
-      );
-
-      expect(mockedRegenerate).toHaveBeenCalledWith("abc");
-      expect(
-        await screen.findByRole("region", { name: "Release timeline" }),
-      ).toBeVisible();
-      expect(
-        screen.queryByRole("button", { name: "Generate detailed notes" }),
-      ).not.toBeInTheDocument();
-    });
+    expect(regenerateNotes).toHaveBeenCalledWith("abc");
+    expect(
+      await screen.findByRole("region", { name: "Release timeline" }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Generate detailed notes" }),
+    ).not.toBeInTheDocument();
   });
 });

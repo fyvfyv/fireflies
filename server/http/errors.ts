@@ -22,6 +22,17 @@ export class HttpError extends Error {
 export const meetingNotFound = () =>
   new HttpError(404, "not_found", "Meeting not found", false);
 
+export const audioMissing = () =>
+  new HttpError(404, "audio_missing", "Audio not found", false);
+
+export const alreadyProcessing = () =>
+  new HttpError(
+    409,
+    "already_processing",
+    "Meeting is already being processed",
+    false,
+  );
+
 export function errorBody(code: string, message: string, retryable: boolean) {
   return { error: { code, message, retryable } };
 }
@@ -33,8 +44,7 @@ type ValidationResult =
       error: { issues: { message: string; path: PropertyKey[] }[] };
     };
 
-// Without a hook, @hono/zod-validator answers with its own 400 body and never
-// reaches onError; throwing here keeps the error envelope.
+// Without a hook, @hono/zod-validator sends its own 400 body and never reaches onError.
 export function validationHook(result: ValidationResult) {
   if (result.success) return;
   const issue = result.error.issues[0];

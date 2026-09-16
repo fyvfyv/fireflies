@@ -29,16 +29,13 @@ const formatRate = (rate: number) => `${rate}×`;
 type PlayerBarProps = {
   sections: readonly Pick<NoteSection, "heading" | "startSecond">[];
   actionItems: readonly Pick<ActionItem, "startSecond">[];
-  /** Reports the bar's height, e.g. to size panels that stop above it. */
   onHeightChange?: (height: number) => void;
-  className?: string;
 };
 
 export function PlayerBar({
   sections,
   actionItems,
   onHeightChange,
-  className,
 }: PlayerBarProps) {
   const player = usePlayer();
   const { status, playing, available, duration, rate } = player;
@@ -54,11 +51,9 @@ export function PlayerBar({
     <section
       ref={height.ref}
       aria-label="Audio player"
-      // The transcript reads this to know where the visible page ends.
       data-player-bar=""
       className={tw(
         "sticky bottom-0 z-30 border-t border-rule bg-sheet shadow-float",
-        className,
       )}
     >
       <div
@@ -98,7 +93,7 @@ export function PlayerBar({
           }}
           tooltip={<ShortcutTip label="Back 10 seconds" keys="J" />}
         >
-          <SkipIcon direction="back" />
+          <RotateCcw aria-hidden="true" size={20} strokeWidth={1.75} />
         </IconButton>
         <IconButton
           label="Forward 10 seconds"
@@ -109,14 +104,12 @@ export function PlayerBar({
           }}
           tooltip={<ShortcutTip label="Forward 10 seconds" keys="L" />}
         >
-          <SkipIcon direction="forward" />
+          <RotateCw aria-hidden="true" size={20} strokeWidth={1.75} />
         </IconButton>
 
         {available ? (
           <p className={tw("ml-1 type-small whitespace-nowrap md:ml-2")}>
             <span
-              // The current time never has more characters than the
-              // duration, so a slot that wide keeps the tape from shifting.
               style={{ minWidth: `${formatShortTime(duration).length}ch` }}
               className={tw("inline-block text-right text-ink")}
             >
@@ -132,7 +125,6 @@ export function PlayerBar({
           </p>
         ) : (
           <p
-            // The status below announces it; this copy is for the eyes.
             aria-hidden="true"
             className={tw(
               "ml-1 flex items-center gap-1.5 type-small whitespace-nowrap text-graphite md:ml-2",
@@ -183,13 +175,6 @@ function useHeight(onChange?: (height: number) => void) {
   }, []);
 
   return { ref, value };
-}
-
-// The amount is in the label and tooltip; a numeral small enough to fit
-// inside the icon would be unreadable.
-function SkipIcon({ direction }: { direction: "back" | "forward" }) {
-  const Icon = direction === "back" ? RotateCcw : RotateCw;
-  return <Icon aria-hidden="true" size={20} strokeWidth={1.75} />;
 }
 
 function ShortcutTip({ label, keys }: { label: string; keys: string }) {
